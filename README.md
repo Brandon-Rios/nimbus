@@ -17,7 +17,19 @@ background, and they stop and ask before anything risky.
 
 No npm packages. Needs only **Node 22.13+** and **Claude Code**.
 
-## Setup on your server (Linux VPS or home server)
+## Quick install
+
+On a Linux server (Debian/Ubuntu tested), as the user Nimbus should run as:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Brandon-Rios/nimbus/main/install.sh | bash
+```
+
+It installs Node 22 and Claude Code if needed, helps you log in to Claude, asks who may sign in, optionally
+sets up voice dictation and a system service, and prints the address to open. Safe to re-run. Prefer to
+read it first? `git clone` the repo and run `./install.sh`.
+
+## Manual setup (Linux VPS or home server)
 
 ```bash
 # 1. Node 22 and Claude Code
