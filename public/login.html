@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0e0e0f">
+<link rel="icon" href="/icon.svg">
+<link rel="manifest" href="/manifest.webmanifest">
+<title>Nimbus</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css">
+<style>
+body { display: grid; place-items: center; min-height: 100dvh; padding: 16px; }
+.box { width: min(360px, 100%); background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 28px; background: var(--side); display: flex; flex-direction: column; gap: 16px; }
+.box h1 { margin: 0; font-size: 22px; font-weight: 650; display: flex; align-items: center; gap: 10px; }
+.err { color: var(--bad); font-size: 14px; min-height: 18px; }
+.or { text-align: center; font-size: 13px; opacity: .6; }
+[hidden] { display: none !important; }
+.hint-text { font-size: 13px; color: var(--muted); margin-top: 4px; line-height: 1.5; }
+.linkish { color: var(--muted); font-size: 13px; }
+#code { letter-spacing: .2em; font-size: 18px; text-align: center; }
+.stack { display: flex; flex-direction: column; gap: 14px; }
+.tabs { width: 100%; }
+.tabs button { flex: 1; }
+</style>
+</head>
+<body>
+<form class="box" id="f">
+  <img src="/nimbus.webp" alt="Nimbus" width="200" height="200" style="align-self:center;width:200px;height:200px;border-radius:14px;image-rendering:pixelated">
+  <div id="acct" hidden class="stack">
+    <div class="seg tabs" role="tablist"><button type="button" data-mode="signin" aria-pressed="true">Sign in</button><button type="button" data-mode="signup" aria-pressed="false">Create account</button></div>
+    <label class="field">Email<input id="email" type="email" autocomplete="email"></label>
+    <label class="field">Password<input id="apw" type="password" autocomplete="current-password" minlength="8"></label>
+    <label class="field" id="confirm-wrap" hidden>Confirm password<input id="apw2" type="password" autocomplete="new-password"></label>
+    <button class="btn dark big" id="acct-go">Sign in</button>
+  </div>
+  <div id="pwbox" hidden class="stack">
+    <label class="field">Password<input id="pw" type="password" autocomplete="current-password"></label>
+    <button class="btn dark big">Log in</button>
+  </div>
+  <div id="mfabox" hidden class="stack">
+    <div><b>Two-factor code</b><div class="hint-text">Open your authenticator app and enter the 6-digit code for Nimbus. Lost your phone? Enter a recovery code instead.</div></div>
+    <label class="field">Code<input id="code" inputmode="numeric" autocomplete="one-time-code" placeholder="123456"></label>
+    <button class="btn dark big">Verify</button>
+    <button type="button" class="linkish" id="mfa-back">Back</button>
+  </div>
+  <div class="err" id="err" role="alert"></div>
+</form>
+<script>
+const $ = (id) => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+if (params.get('error')) $('err').textContent = params.get('error');
+let mode = 'signin', methods = {}, ticket = null;
+function setMode(m) {
+  mode = m;
+  document.querySelectorAll('[data-mode]').forEach((b) => b.setAttribute('aria-pressed', b.dataset.mode === m));
+  $('confirm-wrap').hidden = m !== 'signup';
+  $('acct-go').textContent = m === 'signup' ? 'Create account' : 'Sign in';
+  $('apw').autocomplete = m === 'signup' ? 'new-password' : 'current-password';
+  $('err').textContent = '';
+}
+document.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode)));
+fetch('/api/auth-methods').then((r) => r.json()).then((m) => {
+  methods = m;
+  $('acct').hidden = !m.accounts;
+  // The shared password only shows when there are no personal accounts.
+  $('pwbox').hidden = !m.password || m.accounts;
+});
+$('f').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const err = $('err');
+  err.textContent = '';
+  let url = '/api/login', payload;
+  if (ticket) {
+    url = '/api/login/mfa'; payload = { ticket, code: $('code').value };
+  } else if (!$('acct').hidden) {
+    payload = { email: $('email').value, password: $('apw').value };
+    if (mode === 'signup') {
+      if ($('apw').value !== $('apw2').value) { err.textContent = 'Passwords don’t match'; return; }
+      url = '/api/signup';
+    }
+  } else payload = { password: $('pw').value };
+  const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+  const data = await res.json().catch(() => ({}));
+  if (res.ok && data.mfa) return showMfa(data.ticket);
+  if (res.ok) return (location.href = '/');
+  if (data.restart) hideMfa();
+  err.textContent = data.error || 'Something went wrong';
+});
+function showMfa(t) {
+  ticket = t;
+  for (const id of ['acct', 'pwbox']) $(id).dataset.was = $(id).hidden, $(id).hidden = true;
+  $('mfabox').hidden = false; $('code').value = ''; $('code').focus();
+}
+function hideMfa() {
+  ticket = null;
+  for (const id of ['acct', 'pwbox']) $(id).hidden = $(id).dataset.was === 'true';
+  $('mfabox').hidden = true;
+}
+$('mfa-back').addEventListener('click', () => { hideMfa(); $('err').textContent = ''; });
+</script>
+</body>
+</html>

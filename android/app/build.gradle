@@ -1,0 +1,30 @@
+plugins { id 'com.android.application' }
+
+// The signing key lives outside the repo (~/opt/android-keystore); see android/README.md.
+def ks = new Properties()
+def ksFile = new File(System.getenv('HOME') ?: System.getProperty('user.home'), 'opt/android-keystore/keystore.properties')
+if (ksFile.exists()) ksFile.withInputStream { ks.load(it) }
+
+android {
+    namespace 'dev.nimbus.app'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'dev.nimbus.app'
+        minSdk 29
+        targetSdk 35
+        versionCode((System.getenv('NIMBUS_APP_VERSION_CODE') ?: '1') as int)
+        versionName System.getenv('NIMBUS_APP_VERSION_NAME') ?: '2.0'
+    }
+    signingConfigs {
+        release {
+            if (ks.storeFile) {
+                storeFile file(ks.storeFile); storePassword ks.storePassword
+                keyAlias ks.keyAlias; keyPassword ks.keyPassword
+            }
+        }
+    }
+    buildTypes {
+        release { minifyEnabled false; signingConfig signingConfigs.release }
+    }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+}

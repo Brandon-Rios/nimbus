@@ -1,0 +1,9 @@
+.env
+data/
+node_modules/
+deploy/computer/agent.env
+public/nimbus.apk
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties

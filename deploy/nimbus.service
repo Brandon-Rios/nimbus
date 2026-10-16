@@ -1,0 +1,22 @@
+[Unit]
+Description=Nimbus - personal AI bot team
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Change these to your user and install path
+User=YOUR_USER
+WorkingDirectory=/home/YOUR_USER/nimbus
+ExecStart=/usr/bin/node --no-warnings server.js
+Environment=PORT=8787
+Environment=HOST=0.0.0.0
+Environment=NIMBUS_ALLOWED_EMAILS=you@example.com
+# Or/also: Environment=NIMBUS_PASSWORD=something-long
+Environment=TZ=America/New_York
+# Claude Code must be on PATH for this user (npm global bin)
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/home/YOUR_USER/.npm-global/bin
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

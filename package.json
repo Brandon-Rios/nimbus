@@ -1,0 +1,13 @@
+{
+  "name": "nimbus",
+  "version": "0.1.0",
+  "description": "Personal always-on AI bot team, powered by Claude Code",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node --no-warnings --env-file-if-exists=.env server.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  }
+}

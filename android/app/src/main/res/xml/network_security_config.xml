@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Nimbus is reached on the LAN or over Twingate. Plain HTTP is allowed so the old :8787 address still works;
+     HTTPS certificates are checked by fingerprint in the app (see Trust.java). -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

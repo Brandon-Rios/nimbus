@@ -1,0 +1,14 @@
+[Unit]
+Description=Nimbus computer agent (gives each bot its own desktop container)
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+User=nimbus
+WorkingDirectory=/opt/nimbus/deploy/computer
+EnvironmentFile=/opt/nimbus/deploy/computer/agent.env
+ExecStart=/usr/bin/node agent.mjs
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

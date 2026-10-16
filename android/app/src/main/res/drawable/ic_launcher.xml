@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Nimbus cloud critter on a dark rounded square. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp" android:viewportWidth="14" android:viewportHeight="14">
+    <path android:fillColor="#1b2033" android:pathData="M0,0h14v14h-14z" />
+    <path android:fillColor="#16204a" android:pathData="M3.5,1.5h4v1h3v1h1v1h1v1h1v4h-1v1h-4v1h-1v-1h-1v1h-1v-1h-3v-1h-1v-4h1v-1h1v-2h0.5z" />
+    <path android:fillColor="#c7e3ff" android:pathData="M4,2h3v1h3v1h1v1h1v4h-1v1h-4v-1h-1v1h-2v-1h-1v-4h1v-1h1z" />
+    <path android:fillColor="#16204a" android:pathData="M4.3,6h1.2v1.5h-1.2zM8.5,6h1.2v1.5h-1.2zM6.1,8h1.8v0.5h-1.8z" />
+    <path android:fillColor="#f59bb0" android:pathData="M3,7.7h1v0.6h-1zM10,7.7h1v0.6h-1z" />
+</vector>
