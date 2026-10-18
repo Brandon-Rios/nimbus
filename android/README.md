@@ -22,7 +22,7 @@ downloaded and a self-built app means uninstalling first.)
 
 ## Using it
 
-- **First launch:** enter your server address, e.g. `https://192.168.1.10:8443`. Use the HTTPS port: the
+- **First launch:** enter your server address, e.g. `https://192.168.1.50:8443`. Use the HTTPS port: the
   microphone only works on secure pages.
 - **Certificate:** Nimbus uses a self-signed certificate. The app shows its fingerprint once and asks you to
   trust it; after that it only accepts that exact certificate (`Trust.java`), and warns you if it changes.

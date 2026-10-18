@@ -142,7 +142,11 @@ function summarizeTool(name, input = {}) {
 
 // Traces are kept per run so the approval endpoint can mark a step as paused.
 const liveTraces = new Map(); // runId -> { msgId, body }
+const runClocks = new Map(); // runId -> { start, waited, since } (see the time limit in execute)
 export function markTraceWaiting(runId, toolName, waiting) {
+  const c = runClocks.get(Number(runId));
+  if (c && waiting && !c.since) c.since = Date.now();
+  if (c && !waiting && c.since) { c.waited += Date.now() - c.since; c.since = null; }
   const t = liveTraces.get(Number(runId));
   if (!t) return;
   const step = [...t.body.steps].reverse().find(s => s.tool === toolName && (s.state === 'running' || s.state === 'waiting'));
@@ -214,18 +218,18 @@ function mcpServers(botId, remote = false) {
 }
 
 // ---------- the main thing: run a bot ----------
-export function runBot({ botId, thread, prompt, depth = 0, source = 'user', parentRun = null }) {
+export function runBot({ botId, thread, prompt, depth = 0, source = 'user', parentRun = null, quiet = false }) {
   botId = Number(botId);
   const run = q('INSERT INTO runs (bot_id, thread, prompt, status, parent_run) VALUES (?,?,?,?,?)').run(botId, thread, redact(prompt), 'queued', parentRun);
   const runId = Number(run.lastInsertRowid);
   if (!botStatus.get(botId) || botStatus.get(botId).state === 'idle') setStatus(botId, 'queued', 'Queued');
   const prev = queues.get(botId) || Promise.resolve();
-  const next = prev.catch(() => {}).then(() => execute({ runId, botId, thread, prompt, depth, source }));
+  const next = prev.catch(() => {}).then(() => execute({ runId, botId, thread, prompt, depth, source, quiet }));
   queues.set(botId, next);
   return runId;
 }
 
-function execute({ runId, botId, thread, prompt, depth, source }) {
+function execute({ runId, botId, thread, prompt, depth, source, quiet }) {
   return new Promise((resolve) => {
     const bot = parseBot(q('SELECT * FROM bots WHERE id=?').get(botId));
     const runRow = q('SELECT status FROM runs WHERE id=?').get(runId);
@@ -236,7 +240,9 @@ function execute({ runId, botId, thread, prompt, depth, source }) {
 
     let fullPrompt = prompt;
     if (isRoom) fullPrompt = roomContext(roomId, bot) + `\nYour task now (from ${source}):\n${prompt}`;
-    else if (source === 'schedule') fullPrompt = `(Scheduled routine) ${prompt}`;
+    else if (source === 'schedule') fullPrompt = quiet
+      ? `(Scheduled quiet check) ${prompt}\n\nThis is a quiet check: the user only wants to hear about problems. If everything is fine, reply with exactly ALL_CLEAR followed by one short line of key numbers (e.g. "ALL_CLEAR storage 41%, 11/11 guests up"). If anything needs attention, describe it normally and do not write ALL_CLEAR.`
+      : `(Scheduled routine) ${prompt}`;
 
     const session = !isRoom && source !== 'schedule'
       ? q('SELECT session_id FROM sessions WHERE bot_id=? AND thread=?').get(botId, thread)?.session_id
@@ -283,7 +289,14 @@ function execute({ runId, botId, thread, prompt, depth, source }) {
     child.stdin.on('error', () => {});
     child.stdin.end(fullPrompt);
 
-    const killer = setTimeout(() => child.kill('SIGTERM'), RUN_TIMEOUT_MS);
+    // The time limit counts working time only: time spent waiting for the user's approval doesn't count,
+    // so a routine that needs an OK at 8:00 still finishes when it's approved at 9:30.
+    const clock = { start: Date.now(), waited: 0, since: null };
+    runClocks.set(runId, clock);
+    const killer = setInterval(() => {
+      const waiting = clock.since ? Date.now() - clock.since : 0;
+      if (Date.now() - clock.start - clock.waited - waiting > RUN_TIMEOUT_MS) child.kill('SIGTERM');
+    }, 15_000);
     const toolsById = new Map();
     let buf = '', finalText = null, isError = false, cost = 0, sessionId = null;
 
@@ -326,7 +339,7 @@ function execute({ runId, botId, thread, prompt, depth, source }) {
     child.stderr.on('data', (d) => { stderr += d; if (stderr.length > 8000) stderr = stderr.slice(-8000); });
 
     child.on('close', (code) => {
-      clearTimeout(killer);
+      clearInterval(killer); runClocks.delete(runId);
       procs.delete(runId);
       liveTraces.delete(runId);
       const stopped = traceBody.status === 'stopping';
@@ -349,7 +362,11 @@ function execute({ runId, botId, thread, prompt, depth, source }) {
       else if (reply == null || (code !== 0 && !reply)) {
         reply = `Something went wrong running Claude Code (exit ${code}).\n\n${stderr.trim().split('\n').slice(-6).join('\n') || 'No error output.'}`;
       }
-      const msg = addMessage(thread, botId, isError || (code !== 0 && !stopped) ? 'error' : 'text', reply, runId);
+      // Quiet checks that found nothing wrong are kept as a small note, without a notification.
+      const allClear = quiet && !isError && code === 0 && /^\s*ALL_CLEAR\b/.test(reply);
+      const msg = allClear
+        ? addMessage(thread, botId, 'quiet', reply.replace(/^\s*ALL_CLEAR\b[\s:—-]*/, '').trim() || 'All clear', runId)
+        : addMessage(thread, botId, isError || (code !== 0 && !stopped) ? 'error' : 'text', reply, runId);
 
       const stillQueued = q("SELECT COUNT(*) AS n FROM runs WHERE bot_id=? AND status='queued'").get(botId).n;
       setStatus(botId, stillQueued ? 'queued' : 'idle', stillQueued ? 'Queued' : 'Idle');

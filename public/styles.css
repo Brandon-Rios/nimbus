@@ -430,3 +430,35 @@ body, .side, .aside, .modal, .bubble { transition-property: background-color, co
 #comp-box .small { font-size: 11.5px; margin-top: 4px; }
 .update-box { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .update-box .muted { flex: 1; font-size: 12.5px; }
+.approval .row select { height: 28px; border-radius: 8px; background: var(--btn); border: 1px solid var(--line); padding: 0 6px; font-size: 12.5px; max-width: 260px; }
+.note.quiet-ok { color: var(--ok); opacity: .85; }
+/* Message actions: show on hover (desktop) or after a tap (phones) */
+.msg-actions { display: flex; gap: 2px; margin-top: 3px; opacity: 0; transition: opacity .15s; }
+.msg.user .msg-actions { justify-content: flex-end; }
+.msg:hover .msg-actions, .msg:focus-within .msg-actions { opacity: 1; }
+@media (pointer: coarse) { .msg-actions { opacity: .7; } }
+.msg-actions button { font-size: 11.5px; color: var(--muted); padding: 3px 8px; border-radius: 6px; }
+.msg-actions button:hover { background: var(--hover); color: var(--text); }
+.msg.flash .bubble { animation: flash 2.2s ease; }
+@keyframes flash { 0%, 40% { box-shadow: 0 0 0 3px var(--accent); } 100% { box-shadow: 0 0 0 0 transparent; } }
+/* Message search in the sidebar */
+.side-hits { border-top: 1px solid var(--line); padding: 6px 8px; max-height: 45%; overflow-y: auto; }
+.side-hits h5 { margin: 4px 4px 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.side-hit { display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left; padding: 7px 8px; border-radius: 10px; }
+.side-hit:hover { background: var(--hover); }
+.side-hit .row1 { display: flex; justify-content: space-between; font-size: 13px; }
+.side-hit .sub { font-size: 12px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+/* Usage by bot */
+.ubot { display: flex; align-items: center; gap: 8px; font-size: 12.5px; margin-top: 8px; }
+.ubot .un { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meter.thin { height: 3px; margin-top: 4px; }
+/* Activity log */
+.log { display: flex; flex-direction: column; gap: 4px; max-height: 65vh; overflow-y: auto; }
+.log-row { display: flex; align-items: flex-start; gap: 10px; padding: 9px 10px; border-radius: 10px; background: var(--panel); }
+.log-row .li { width: 16px; text-align: center; font-weight: 700; color: var(--ok); }
+.log-row.error .li, .log-row.interrupted .li { color: var(--bad); }
+.log-row.stopped .li { color: var(--muted); }
+.log-row .lt { flex: 1; min-width: 0; font-size: 13px; }
+.log-row .lp { color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log-row .la { font-size: 12px; margin-top: 3px; display: flex; gap: 5px; align-items: center; color: var(--muted); }
+.log-row .la.approved b { color: var(--ok); } .log-row .la.rejected b, .log-row .la.expired b { color: var(--bad); }

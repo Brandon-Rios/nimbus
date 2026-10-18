@@ -143,6 +143,11 @@ Bot computers: attachments are copied to the bot's computer with each task; the 
 to download what the bot saved (~/Downloads, ~/work); idle computers sleep after 2 h (`NIMBUS_COMPUTER_SLEEP_MIN`, 0 = never)
 and wake on the next task; Server settings → Update computers rebuilds them with the latest Claude Code and Chromium.
 
+Approvals: `@self-email` in a bot's Always-allow lets it email only you; time waiting for approval doesn't count toward the
+run limit. Routines can be quiet checks (only report problems) and are skipped when the plan's 5-hour limit is over 85%
+(`NIMBUS_ROUTINE_GUARD_PCT`). `data/shared/HOMELAB.md` is included in every bot's brief. Nightly encrypted backups:
+`bin/backup.mjs` (restore with `--restore`). Read-aloud uses Piper (`~/opt/piper`). `bin/team-status.mjs` summarizes the team.
+
 Secrets that look like API keys, tokens or passwords are masked as `[REDACTED]` before chat
 messages, run logs and approvals are saved. The bot still receives your original message.
 

@@ -117,7 +117,11 @@ public class EventService extends Service {
             String name = botNames.containsKey(author) ? botNames.get(author) : "A bot";
             if (kind.equals("approval")) {
                 JSONObject a = new JSONObject(m.optString("body"));
-                if ("pending".equals(a.optString("status"))) notify(name + " needs approval", a.optString("tool"), thread);
+                if ("pending".equals(a.optString("status"))) {
+                    JSONObject in = a.optJSONObject("input");
+                    String what = in != null && in.has("command") ? in.optString("command") : a.optString("tool");
+                    notifyApproval(name + " needs approval", what, thread, a.optInt("approvalId"));
+                }
             } else if (kind.equals("text") && !author.equals("user") && !author.equals("system") && !MainActivity.visible) {
                 String body = m.optString("body").replaceAll("\\s+", " ");
                 notify(name, body.length() > 180 ? body.substring(0, 180) + "…" : body, thread);
@@ -129,6 +133,26 @@ public class EventService extends Service {
         Intent i = new Intent(this, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
         if (thread != null) i.putExtra("thread", thread);
         return PendingIntent.getActivity(this, thread == null ? 0 : thread.hashCode(), i, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+    }
+
+    private PendingIntent decide(int approvalId, int notifId, String decision) {
+        Intent i = new Intent(this, ApprovalReceiver.class).putExtra("approvalId", approvalId)
+                .putExtra("notifId", notifId).putExtra("decision", decision);
+        return PendingIntent.getBroadcast(this, approvalId * 2 + (decision.equals("approve") ? 0 : 1), i,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+    }
+
+    /** Approval request with Approve / Reject buttons; tapping the body opens the chat to review it first. */
+    private void notifyApproval(String title, String text, String thread, int approvalId) {
+        int id = nextId++;
+        String shown = text.length() > 300 ? text.substring(0, 300) + "…" : text;
+        Notification n = new Notification.Builder(this, CH_ALERTS).setSmallIcon(R.drawable.ic_launcher)
+                .setContentTitle(title).setContentText(shown).setStyle(new Notification.BigTextStyle().bigText(shown))
+                .setContentIntent(open(thread)).setAutoCancel(true)
+                .addAction(new Notification.Action.Builder(null, "Approve", decide(approvalId, id, "approve")).build())
+                .addAction(new Notification.Action.Builder(null, "Reject", decide(approvalId, id, "reject")).build())
+                .build();
+        getSystemService(NotificationManager.class).notify(id, n);
     }
 
     private void notify(String title, String text, String thread) {

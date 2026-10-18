@@ -13,6 +13,7 @@ import { execFile, execFileSync, spawn } from 'node:child_process';
 import { CLAUDE_BIN, computersOn, agentConfig, agent, runBot, stopRun, addMessage, updateMessage, botStatus, roomMembers, findMentions, markTraceWaiting, recoverRuns, HOOK_TOKEN } from './runner.js';
 import { TEMPLATES, PLUGINS, publicPlugin } from './catalog.js';
 import { startScheduler, nextRun, isValidCron } from './scheduler.js';
+import { getPlanUsage } from './planusage.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(HERE, 'public');
@@ -38,6 +39,27 @@ function ruleMatches(rule, tool, input) {
   const m = rule.match(/^([^(]+)\((.*)\)$/s);
   if (m) return globToRe(m[1].trim()).test(tool) && globToRe(m[2]).test(toolArg(input));
   return globToRe(rule.trim()).test(tool);
+}
+// "@self-email" in a bot's Always-allow rules lets it send email only to the Nimbus owner's own
+// addresses (NIMBUS_ALLOWED_EMAILS) without asking; mail to anyone else still waits for approval.
+function isSelfEmail(tool, input = {}) {
+  if (!/Gmail__(send_message|create_draft)$/i.test(tool)) return false;
+  const list = (v) => (Array.isArray(v) ? v : v ? String(v).split(',') : []).map((x) => String(x).replace(/^.*<|>.*$/g, '').trim().toLowerCase()).filter(Boolean);
+  const all = [...list(input.to), ...list(input.cc), ...list(input.bcc)];
+  return all.length > 0 && all.every((e) => ALLOWED_EMAILS.includes(e));
+}
+// The rule "Always allow" saves: the exact command, or a prefix pattern of its first words.
+function rememberRule(tool, input, kind) {
+  if (tool !== 'Bash') return tool;
+  const cmd = String(input.command || '').trim();
+  if (kind !== 'pattern') return `Bash(${cmd})`;
+  return `Bash(${commandPrefix(cmd)}*)`;
+}
+function commandPrefix(cmd) {
+  const words = cmd.split(/\s+/);
+  const keep = [];
+  for (const w of words) { if (keep.length >= 2 || /^[-'"$|;&><]/.test(w)) break; keep.push(w); }
+  return (keep.join(' ') || words[0]) + ' ';
 }
 const waiters = new Map(); // approvalId -> Set(resolve)
 function notifyApproval(id) {
@@ -75,6 +97,8 @@ function state(req) {
   const learned = bots.flatMap((b) => tailMemory(b.id, 2).map((text) => ({ botId: b.id, text }))).slice(-5);
   const windowCost = q("SELECT COALESCE(SUM(cost_usd),0) AS c FROM runs WHERE started_at >= unixepoch() - 5*3600").get().c;
   const running = q("SELECT COUNT(*) AS n FROM runs WHERE status='running'").get().n;
+  // Share of the last 7 days' usage per bot (Claude Code's reported cost, used as a relative measure).
+  const byBot = q("SELECT bot_id, COUNT(*) AS runs, COALESCE(SUM(cost_usd),0) AS cost FROM runs WHERE started_at >= unixepoch() - 7*86400 GROUP BY bot_id ORDER BY cost DESC").all();
   const last = {};
   for (const m of q(`SELECT m.thread, m.author, m.kind, m.body, m.created_at FROM messages m
       JOIN (SELECT thread, MAX(id) AS id FROM messages WHERE kind IN ('text','error','approval') GROUP BY thread) x ON x.id = m.id`).all()) {
@@ -86,7 +110,7 @@ function state(req) {
   for (const r of q('SELECT * FROM bot_plugins').all()) (botPlugins[r.bot_id] ||= []).push(r.plugin_id);
   for (const b of bots) b.plugins = botPlugins[b.id] || [];
   const installed = q('SELECT id FROM plugins').all().map((r) => r.id);
-  return { bots, rooms, approvals, routines, upNext, learned, last, installed, user: req?.user || null, computers: computersOn(), proxmox: !!pveConfig(), usage: { windowCost, budget: WINDOW_BUDGET, running } };
+  return { bots, rooms, approvals, routines, upNext, learned, last, installed, user: req?.user || null, computers: computersOn(), proxmox: !!pveConfig(), usage: { windowCost, budget: WINDOW_BUDGET, running, byBot } };
 }
 
 function postToThread(thread, text, files = []) {
@@ -377,20 +401,20 @@ route('PUT', '/api/bots/:id/plugins', async (req, res, p) => {
 route('POST', '/api/routines', async (req, res) => {
   const r = await body(req);
   if (!isValidCron(r.cron)) return json(res, 400, { error: 'Schedule must be a 5-part cron like "0 9 * * 1-5"' });
-  q('INSERT INTO routines (bot_id, cron, prompt) VALUES (?,?,?)').run(r.bot_id, r.cron.trim(), r.prompt || '');
+  q('INSERT INTO routines (bot_id, cron, prompt, quiet) VALUES (?,?,?,?)').run(r.bot_id, r.cron.trim(), r.prompt || '', r.quiet ? 1 : 0);
   broadcast('state_changed', {}); json(res, 200, { ok: true });
 });
 route('PATCH', '/api/routines/:id', async (req, res, p) => {
   const r = await body(req);
   if (r.cron !== undefined && !isValidCron(r.cron)) return json(res, 400, { error: 'Invalid schedule' });
   const cur = q('SELECT * FROM routines WHERE id=?').get(p.id);
-  q('UPDATE routines SET cron=?, prompt=?, enabled=? WHERE id=?').run(r.cron ?? cur.cron, r.prompt ?? cur.prompt, r.enabled ?? cur.enabled, p.id);
+  q('UPDATE routines SET cron=?, prompt=?, enabled=?, quiet=? WHERE id=?').run(r.cron ?? cur.cron, r.prompt ?? cur.prompt, r.enabled ?? cur.enabled, r.quiet === undefined ? cur.quiet : r.quiet ? 1 : 0, p.id);
   broadcast('state_changed', {}); json(res, 200, { ok: true });
 });
 route('DELETE', '/api/routines/:id', (req, res, p) => { q('DELETE FROM routines WHERE id=?').run(p.id); broadcast('state_changed', {}); json(res, 200, { ok: true }); });
 route('POST', '/api/routines/:id/run', (req, res, p) => {
   const r = q('SELECT * FROM routines WHERE id=?').get(p.id);
-  runBot({ botId: r.bot_id, thread: 'bot:' + r.bot_id, prompt: r.prompt, source: 'schedule' });
+  runBot({ botId: r.bot_id, thread: 'bot:' + r.bot_id, prompt: r.prompt, source: 'schedule', quiet: !!r.quiet });
   json(res, 200, { ok: true });
 });
 
@@ -431,7 +455,7 @@ route('POST', '/api/approvals/:id', async (req, res, p) => {
   if (remember && status === 'approved') {
     const bot = parseBot(q('SELECT * FROM bots WHERE id=?').get(a.bot_id));
     const input = JSON.parse(a.input || '{}');
-    const rule = a.tool === 'Bash' ? `Bash(${input.command})` : a.tool;
+    const rule = rememberRule(a.tool, input, remember);
     if (!bot.allow_rules.includes(rule)) saveBot(bot.id, { allow_rules: JSON.stringify([...bot.allow_rules, rule]) });
   }
   const msg = q("SELECT * FROM messages WHERE kind='approval' AND run_id=? AND body LIKE ?").get(a.run_id, `%"approvalId":${a.id},%`);
@@ -446,7 +470,8 @@ route('POST', '/api/approvals/:id', async (req, res, p) => {
 // Secrets are write-only: the app sees whether one is saved, never its value.
 const SETTINGS = [
   { key: 'agent_url', env: 'NIMBUS_AGENT_URL' }, { key: 'agent_token', env: 'NIMBUS_AGENT_TOKEN', secret: true }, { key: 'callback_url', env: 'NIMBUS_CALLBACK_URL' },
-  { key: 'pve_host' }, { key: 'pve_token_id' }, { key: 'pve_token_secret', secret: true }
+  { key: 'pve_host' }, { key: 'pve_token_id' }, { key: 'pve_token_secret', secret: true },
+  { key: 'backup_target' }
 ];
 route('GET', '/api/settings', (req, res) => {
   const out = {};
@@ -458,6 +483,7 @@ route('PUT', '/api/settings', async (req, res) => {
   for (const s of SETTINGS) {
     if (b[s.key] === undefined || (s.secret && b[s.key] === '__saved__')) continue;
     const v = String(b[s.key]).trim();
+    if (s.key === 'backup_target' && v && !/^[\w.-]+@[\w.-]+:\/[^\s]*$/.test(v)) return json(res, 400, { error: 'Backup target should look like user@host:/path' });
     if (/_url$/.test(s.key) && v && !/^https?:\/\/[^\s]+$/.test(v)) return json(res, 400, { error: `${s.key.replace('_', ' ')} must start with http:// or https://` });
     setSetting(s.key, v);
   }
@@ -498,31 +524,80 @@ route('GET', '/api/proxmox', async (req, res) => {
   } catch (e) { json(res, 200, { configured: true, error: e.message }); }
 });
 
-// ---------- Claude plan usage ----------
-// The same numbers as Claude Code's /usage: % of the 5-hour and weekly limits used, from Anthropic's
-// OAuth usage endpoint with the login Claude Code keeps in ~/.claude/.credentials.json. This endpoint
-// isn't a documented API, so failures fall back to the cost estimate in the app.
-let planCache = null; // { at, data }
-route('GET', '/api/plan-usage', async (req, res) => {
-  if (planCache && Date.now() - planCache.at < 60_000) return json(res, 200, planCache.data);
-  let data;
-  try {
-    const home = process.env.HOME || os.homedir();
-    const cred = JSON.parse(fs.readFileSync(path.join(home, '.claude', '.credentials.json'), 'utf8')).claudeAiOauth || {};
-    if (!cred.accessToken) throw new Error('Claude Code isn’t logged in with a Claude plan');
-    if (cred.expiresAt && cred.expiresAt < Date.now()) throw new Error('Claude login token expired; it refreshes on the next bot run');
-    const r = await fetch('https://api.anthropic.com/api/oauth/usage', {
-      headers: { authorization: `Bearer ${cred.accessToken}`, 'anthropic-beta': 'oauth-2025-04-20', 'user-agent': 'claude-code/2 (nimbus)' },
-      signal: AbortSignal.timeout(8000)
-    });
-    if (!r.ok) throw new Error(`Usage check failed (${r.status})`);
-    const u = await r.json();
-    const win = (w, label) => (w && typeof w.utilization === 'number' ? { label, used: w.utilization, resets: w.resets_at } : null);
-    data = { ok: true, plan: cred.subscriptionType || '', windows: [win(u.five_hour, '5-hour limit'), win(u.seven_day, 'Weekly limit'),
-      win(u.seven_day_opus, 'Weekly Opus'), win(u.seven_day_sonnet, 'Weekly Sonnet')].filter(Boolean) };
-  } catch (e) { data = { ok: false, error: e.message }; }
-  planCache = { at: Date.now(), data };
-  json(res, 200, data);
+// ---------- Claude plan usage (planusage.js) ----------
+route('GET', '/api/plan-usage', async (req, res) => json(res, 200, await getPlanUsage()));
+
+// ---------- read aloud (Piper, local text-to-speech) ----------
+// Turns a bot reply into speech on this server; nothing leaves the network.
+const PIPER_BIN = process.env.NIMBUS_PIPER_BIN || path.join(os.homedir(), 'opt/piper/piper');
+const PIPER_VOICE = process.env.NIMBUS_PIPER_VOICE || path.join(os.homedir(), 'opt/piper-voices/en_US-lessac-medium.onnx');
+// Markdown and links read badly, so speak plain text.
+const speakable = (t) => String(t || '').replace(/```[\s\S]*?```/g, ' (code omitted) ').replace(/`([^`]+)`/g, '$1')
+  .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').replace(/https?:\/\/\S+/g, 'a link').replace(/[*_#>|]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 6000);
+route('GET', '/api/speak', (req, res) => json(res, 200, { available: fs.existsSync(PIPER_BIN) && fs.existsSync(PIPER_VOICE) }));
+route('POST', '/api/speak', async (req, res) => {
+  if (!fs.existsSync(PIPER_BIN) || !fs.existsSync(PIPER_VOICE)) return json(res, 503, { error: 'Read-aloud isn’t installed on the server' });
+  const { messageId, text } = await body(req);
+  const src = messageId ? q('SELECT body FROM messages WHERE id=?').get(Number(messageId))?.body : text;
+  const say = speakable(src);
+  if (!say) return json(res, 400, { error: 'Nothing to read' });
+  const p = spawn(PIPER_BIN, ['--model', PIPER_VOICE, '--output_file', '-'], { stdio: ['pipe', 'pipe', 'ignore'] });
+  const chunks = [];
+  p.stdout.on('data', (c) => chunks.push(c));
+  p.on('error', (e) => { if (!res.headersSent) json(res, 500, { error: e.message }); });
+  p.on('close', (code) => {
+    if (res.headersSent) return;
+    if (code !== 0 || !chunks.length) return json(res, 500, { error: 'Speech failed' });
+    const wav = Buffer.concat(chunks);
+    res.writeHead(200, { 'content-type': 'audio/wav', 'content-length': wav.length, 'cache-control': 'no-store' });
+    res.end(wav);
+  });
+  p.stdin.end(say);
+});
+
+// ---------- backups (bin/backup.mjs) ----------
+// Nightly at 03:15 local time, plus "Back up now" in Server settings. The last result is kept in settings.
+let backupRunning = false;
+function runBackup() {
+  if (backupRunning) return Promise.resolve(JSON.parse(getSetting('backup_last') || '{}'));
+  backupRunning = true;
+  return new Promise((resolve) => execFile(process.execPath, ['--no-warnings', path.join(HERE, 'bin/backup.mjs')], { timeout: 30 * 60_000 }, (err, out) => {
+    backupRunning = false;
+    let r; try { r = JSON.parse(String(out).trim().split('\n').pop()); } catch { r = { ok: false, error: err?.message || 'backup failed', at: Date.now() }; }
+    setSetting('backup_last', JSON.stringify(r));
+    if (!r.ok) addMessage('bot:3', 'system', 'note', `⚠ Nightly backup failed: ${r.error}`);
+    resolve(r);
+  }));
+}
+setInterval(() => {
+  const d = new Date();
+  if (d.getHours() === 3 && d.getMinutes() === 15) runBackup();
+}, 60_000).unref();
+route('GET', '/api/backup', (req, res) => json(res, 200, { last: JSON.parse(getSetting('backup_last') || 'null'), running: backupRunning }));
+route('POST', '/api/backup', async (req, res) => json(res, 200, await runBackup()));
+
+// ---------- search, activity log, usage by bot ----------
+route('GET', '/api/search', (req, res, _p, url) => {
+  const term = String(url.searchParams.get('q') || '').trim();
+  if (term.length < 2) return json(res, 200, { results: [] });
+  const like = '%' + term.replace(/[\\%_]/g, (c) => '\\' + c) + '%';
+  const rows = q(`SELECT id, thread, author, body, created_at FROM messages WHERE kind IN ('text','quiet','note') AND body LIKE ? ESCAPE '\\'
+    ORDER BY id DESC LIMIT 40`).all(like);
+  const low = term.toLowerCase();
+  json(res, 200, { results: rows.map((m) => {
+    const i = m.body.toLowerCase().indexOf(low), start = Math.max(0, i - 50);
+    return { id: m.id, thread: m.thread, author: m.author, at: m.created_at,
+      snippet: (start ? '…' : '') + m.body.slice(start, start + 160).replace(/\s+/g, ' ') + (start + 160 < m.body.length ? '…' : '') };
+  }) });
+});
+route('GET', '/api/activity', (req, res, _p, url) => {
+  const days = Math.min(90, Number(url.searchParams.get('days') || 7));
+  const since = Math.floor(Date.now() / 1000) - days * 86400;
+  const runs = q(`SELECT id, bot_id, thread, status, started_at, ended_at, cost_usd, effort, parent_run, substr(prompt, 1, 160) AS prompt
+    FROM runs WHERE started_at >= ? ORDER BY id DESC LIMIT 400`).all(since);
+  const approvals = q(`SELECT id, run_id, bot_id, tool, status, note, created_at, decided_at, substr(input, 1, 300) AS input
+    FROM approvals WHERE created_at >= ? ORDER BY id DESC LIMIT 400`).all(since);
+  json(res, 200, { runs, approvals });
 });
 
 // ---------- voice dictation (whisper.cpp) ----------
@@ -578,11 +653,13 @@ route('POST', '/api/hook/pretool', async (req, res) => {
   const run = q('SELECT * FROM runs WHERE id=?').get(runId);
   if (!run) return json(res, 200, { decision: 'allow' });
   const bot = parseBot(q('SELECT * FROM bots WHERE id=?').get(run.bot_id));
-  const gated = bot.approval_rules.some((r) => ruleMatches(r, tool, input)) && !bot.allow_rules.some((r) => ruleMatches(r, tool, input));
+  const gated = bot.approval_rules.some((r) => ruleMatches(r, tool, input)) && !bot.allow_rules.some((r) => ruleMatches(r, tool, input))
+    && !(bot.allow_rules.includes('@self-email') && isSelfEmail(tool, input));
   if (!gated) return json(res, 200, { decision: 'allow' });
   const ins = q('INSERT INTO approvals (run_id, bot_id, thread, tool, input) VALUES (?,?,?,?,?)').run(run.id, bot.id, run.thread, tool, redact(JSON.stringify(input || {})));
   const approvalId = Number(ins.lastInsertRowid);
-  addMessage(run.thread, bot.id, 'approval', { approvalId, tool, input, status: 'pending' }, run.id);
+  const pattern = tool === 'Bash' ? commandPrefix(String(input?.command || '')).trim() + ' …' : null;
+  addMessage(run.thread, bot.id, 'approval', { approvalId, tool, input, status: 'pending', pattern }, run.id);
   markTraceWaiting(run.id, tool, true);
   broadcast('approvals_changed', {});
   json(res, 200, { decision: 'ask', approvalId });

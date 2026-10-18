@@ -105,6 +105,15 @@ If an answer takes longer than ~4 minutes you get a run id; fetch it later with:
 - Files you save under ~/Downloads or ~/work show up in Nimbus (computer dialog → Files), so the user can download them.` : ''}`;
 }
 
+// One shared, current description of the homelab (data/shared/HOMELAB.md) goes into every brief,
+// so bots don't each keep their own copy that drifts out of date.
+function homelabSection() {
+  try {
+    const facts = fs.readFileSync(path.join(DATA_DIR, 'shared', 'HOMELAB.md'), 'utf8').trim();
+    return facts ? `\n## Homelab facts (shared by all bots; trust this over your own notes)\n${facts}\n` : '';
+  } catch { return ''; }
+}
+
 // Each bot gets a workspace folder. CLAUDE.md there is its standing brief;
 // MEMORY.md is what it has learned, which it edits itself.
 export { ASK_BOT };
@@ -129,6 +138,7 @@ ${bot.instructions || '(none yet)'}
 
 ## Your team
 ${teamSection(bot, remote)}
+${homelabSection()}
 
 ## Memory
 @MEMORY.md
@@ -149,3 +159,4 @@ export function setSetting(key, value) {
 
 if (!db.prepare('PRAGMA table_info(messages)').all().some((c) => c.name === 'files')) db.exec("ALTER TABLE messages ADD COLUMN files TEXT DEFAULT '[]'");
 if (!db.prepare('PRAGMA table_info(runs)').all().some((c) => c.name === 'parent_run')) db.exec('ALTER TABLE runs ADD COLUMN parent_run INTEGER');
+if (!db.prepare('PRAGMA table_info(routines)').all().some((c) => c.name === 'quiet')) db.exec('ALTER TABLE routines ADD COLUMN quiet INTEGER DEFAULT 0');

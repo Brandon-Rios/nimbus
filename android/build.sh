@@ -16,7 +16,7 @@ if [ ! -f "$KS/keystore.properties" ]; then
   chmod 600 "$KS/nimbus.jks" "$KS/keystore.properties"
   echo "Created a signing key in $KS. Back it up."
 fi
-export NIMBUS_APP_VERSION_CODE=$(( $(git rev-list --count HEAD -- . 2>/dev/null || echo 0) + 1 ))
+export NIMBUS_APP_VERSION_CODE=${NIMBUS_APP_VERSION_CODE:-$(( $(git rev-list --count HEAD -- . 2>/dev/null || echo 0) + 1 ))}
 export NIMBUS_APP_VERSION_NAME="2.$NIMBUS_APP_VERSION_CODE"
 echo "sdk.dir=$ANDROID_HOME" > local.properties
 "$HOME/opt/gradle/bin/gradle" --quiet assembleRelease

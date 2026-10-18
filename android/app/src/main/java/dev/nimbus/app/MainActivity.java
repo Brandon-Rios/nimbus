@@ -30,6 +30,7 @@ public class MainActivity extends Activity {
 
     private WebView web;
     private PermissionRequest pendingMic;
+    private String pendingShare; // JSON handed to the page once it has loaded (see deliverShare)
     private ValueCallback<Uri[]> pendingFiles;
 
     @Override protected void onCreate(Bundle saved) {
@@ -79,6 +80,7 @@ public class MainActivity extends Activity {
             }
             @Override public void onPageFinished(WebView v, String url) {
                 CookieManager.getInstance().flush();
+                deliverShare();
                 if (CookieManager.getInstance().getCookie(Trust.serverUrl(MainActivity.this)) != null) startEvents();
             }
             @Override public void onReceivedError(WebView v, WebResourceRequest r, WebResourceError e) {
@@ -112,6 +114,7 @@ public class MainActivity extends Activity {
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQ_NOTIFY);
 
+        readShare(getIntent());
         if (Trust.serverUrl(this) == null) askForUrl("Your Nimbus address:");
         else load(getIntent());
     }
@@ -124,8 +127,52 @@ public class MainActivity extends Activity {
 
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
+        if (readShare(intent)) { deliverShare(); return; }
         String thread = intent.getStringExtra("thread");
         if (thread != null) web.evaluateJavascript("location.hash = " + org.json.JSONObject.quote(thread), null);
+    }
+
+    /** Shared text, links and files from another app, packed as JSON for the page's window.nimbusShare(). */
+    private boolean readShare(Intent intent) {
+        if (intent == null) return false;
+        String action = intent.getAction();
+        if (!Intent.ACTION_SEND.equals(action) && !Intent.ACTION_SEND_MULTIPLE.equals(action)) return false;
+        try {
+            org.json.JSONObject share = new org.json.JSONObject();
+            String text = intent.getStringExtra(Intent.EXTRA_TEXT), subject = intent.getStringExtra(Intent.EXTRA_SUBJECT);
+            share.put("text", (subject != null && text != null && !text.contains(subject) ? subject + "\n" : "") + (text != null ? text : ""));
+            java.util.ArrayList<Uri> uris = new java.util.ArrayList<>();
+            boolean t33 = android.os.Build.VERSION.SDK_INT >= 33; // typed getters only exist from Android 13
+            if (Intent.ACTION_SEND.equals(action)) {
+                Uri u = t33 ? intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri.class) : intent.getParcelableExtra(Intent.EXTRA_STREAM);
+                if (u != null) uris.add(u);
+            } else {
+                java.util.ArrayList<Uri> l = t33 ? intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri.class) : intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
+                if (l != null) uris.addAll(l);
+            }
+            org.json.JSONArray files = new org.json.JSONArray();
+            for (Uri u : uris.subList(0, Math.min(uris.size(), 10))) {
+                String name = "shared-file", type = getContentResolver().getType(u);
+                try (android.database.Cursor c = getContentResolver().query(u, new String[]{android.provider.OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+                    if (c != null && c.moveToFirst()) name = c.getString(0);
+                }
+                try (java.io.InputStream in = getContentResolver().openInputStream(u)) {
+                    byte[] data = in.readAllBytes();
+                    if (data.length > 20 * 1024 * 1024) continue; // Nimbus's upload limit
+                    files.put(new org.json.JSONObject().put("name", name).put("type", type == null ? "" : type)
+                            .put("data", android.util.Base64.encodeToString(data, android.util.Base64.NO_WRAP)));
+                }
+            }
+            share.put("files", files);
+            pendingShare = share.toString();
+            intent.setAction(Intent.ACTION_MAIN); // don't re-share on rotation
+            return true;
+        } catch (Exception e) { return false; }
+    }
+    private void deliverShare() {
+        if (pendingShare == null) return;
+        final String js = "window.nimbusShare ? (window.nimbusShare(" + pendingShare + "), 'ok') : 'wait'";
+        web.evaluateJavascript(js, (r) -> { if (r != null && r.contains("ok")) pendingShare = null; });
     }
 
     private void askForUrl(String message) {

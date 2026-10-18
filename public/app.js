@@ -259,15 +259,19 @@ function renderSide() {
             <span class="sub">${esc(it.last ? (it.last.author === 'user' ? 'You: ' : '') + it.last.text : it.fallback || 'Say hi')}</span>
           </span>
         </button>`).join('')
-        : sideQuery ? '<div class="side-empty">No matches</div>'
+        : sideQuery ? '<div class="side-empty">No chats match</div>'
         : `<div class="side-empty">No bots yet.<br><button class="link" data-act="market">Browse the Marketplace</button> or <button class="link" data-act="new-bot">make one</button>.</div>`}
     </div>
+    ${sideQuery.length >= 2 ? `<div class="side-hits" id="side-hits"><div class="side-empty">Searching messages…</div></div>` : ''}
     <div class="side-foot">
       ${pending ? `<button class="foot-item" data-act="panel">${ICON.bell}<span>Approvals</span><span class="badge">${pending}</span></button>` : ''}
       <button class="foot-item" data-act="market">${ICON.grid}<span>Marketplace</span></button>
       <button class="foot-item user" data-act="user-menu"><span class="initial">${esc(userName()[0])}</span><span>${esc(userName())}</span>${ICON.dots}</button>
     </div>`;
 }
+
+const _renderSide = renderSide;
+renderSide = function () { _renderSide(); if (sideQuery.length >= 2) searchMessages(); }; // keep message hits after re-renders
 
 // ---------- activity drawer ----------
 function renderAside() {
@@ -293,6 +297,11 @@ function renderAside() {
     </section>
     ${d.computers ? '<section id="comp-box"><h4>Bot computers</h4><div class="muted">Loading…</div></section>' : ''}
     ${d.proxmox ? '<section id="pve-box"><h4>Proxmox</h4><div class="muted">Loading…</div></section>' : ''}
+    ${d.usage.byBot?.length ? `<section><h4>Usage by bot · 7 days</h4>${(() => { const total = d.usage.byBot.reduce((a, x) => a + x.cost, 0) || 1;
+      return d.usage.byBot.slice(0, 6).map((x) => { const b = bot(x.bot_id); const pc = Math.round((x.cost / total) * 100);
+        return `<div class="ubot">${avatar(b, 20)}<span class="un">${esc(b?.name || 'Deleted bot')}</span><span class="muted">${x.runs} runs · ${b ? esc(EFFORTS.find((e) => e[0] === b.effort)?.[1] || b.effort) : ''}</span><b>${pc}%</b></div>
+          <div class="meter thin"><div style="width:${pc}%"></div></div>`; }).join(''); })()}
+      <div class="muted small">Heavy bots on High or Max effort usually do fine on Medium for routine work.</div></section>` : ''}
     <section class="usage" id="usage-box">${usageFallback(d, pct)}</section>`;
   loadPlanUsage();
   if (d.proxmox) loadProxmox();
@@ -478,6 +487,55 @@ function renderFiles(m) {
 }
 function fmtSize(n) { return n < 1024 ? n + ' B' : n < 1048576 ? Math.round(n / 1024) + ' KB' : (n / 1048576).toFixed(1) + ' MB'; }
 
+// ---------- read aloud ----------
+// Plays a bot reply spoken by Piper on the server. Tapping again (or another reply) stops it.
+let speaking = null; // { audio, btn }
+async function speak(btn) {
+  const same = speaking?.btn === btn;
+  if (speaking) { speaking.audio.pause(); speaking.btn.textContent = '▶ Read aloud'; speaking = null; }
+  if (same) return;
+  btn.textContent = '… Loading';
+  try {
+    const r = await fetch('/api/speak', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ messageId: Number(btn.dataset.speak) }) });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Couldn’t read that aloud');
+    const audio = new Audio(URL.createObjectURL(await r.blob()));
+    speaking = { audio, btn };
+    btn.textContent = '■ Stop';
+    audio.onended = () => { if (speaking?.audio === audio) { btn.textContent = '▶ Read aloud'; speaking = null; } };
+    await audio.play();
+  } catch (err) { btn.textContent = '▶ Read aloud'; toast(err.message); }
+}
+function flashMessage(id) {
+  const el = document.querySelector(`[data-mid="${id}"]`);
+  if (!el) return toast('That message is further back in the chat');
+  el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 2200);
+}
+
+// ---------- share from other apps (Android app) ----------
+// The app calls this with { text, files: [{ name, type, data (base64) }] }; you pick which bot gets it.
+window.nimbusShare = (share) => {
+  if (!S.data) { setTimeout(() => window.nimbusShare(share), 500); return; }
+  const files = (share.files || []).map((f) => {
+    const bin = atob(f.data), bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new File([bytes], f.name || 'shared-file', { type: f.type || '' });
+  });
+  const what = [share.text ? 'text' : '', files.length ? `${files.length} file${files.length > 1 ? 's' : ''}` : ''].filter(Boolean).join(' and ');
+  const el = modal(`<div class="modal-head"><h2>Share ${esc(what)} with…</h2><button class="icon-btn" data-close aria-label="Close">${ICON.close}</button></div>
+    <div class="stack-list">${S.data.bots.map((b) => `<button class="card-item" data-share-to="bot:${b.id}">${avatar(b, 30)}<span><b>${esc(b.name)}</b><small>${esc(b.role || '')}</small></span></button>`).join('')}</div>`);
+  el.addEventListener('click', async (e) => {
+    if (e.target.closest('[data-close]')) return closeModal();
+    const t = e.target.closest('[data-share-to]'); if (!t) return;
+    closeModal();
+    await openThread(t.dataset.shareTo);
+    const ta = $('#msg');
+    if (share.text && ta) { ta.value = share.text.trim(); autosize(ta); }
+    if (files.length) addFiles(files);
+    ta?.focus();
+  });
+};
+
 // ---------- dictation ----------
 // Tap the mic to start, tap again to stop; the text lands at the cursor for you to edit before sending.
 let browserStop = null;
@@ -560,12 +618,15 @@ function clearAttachments() {
 }
 
 function renderMessage(m, prev) {
-  if (m.author === 'user') return `<div class="msg user" data-mid="${m.id}">${renderFiles(m)}${m.body ? `<div class="bubble">${esc(m.body)}</div>` : ''}</div>`;
+  if (m.author === 'user') return `<div class="msg user" data-mid="${m.id}">${renderFiles(m)}${m.body ? `<div class="bubble">${esc(m.body)}</div>` : ''}
+    ${m.body ? `<div class="msg-actions"><button data-copy="${m.id}" title="Copy">Copy</button><button data-edit="${m.id}" title="Edit and resend">Edit</button><button data-retry="${m.id}" title="Send again">Retry</button></div>` : ''}</div>`;
   if (m.kind === 'note') return `<div class="note" data-mid="${m.id}">${esc(m.body)}</div>`;
+  if (m.kind === 'quiet') return `<div class="note quiet-ok" data-mid="${m.id}" title="Quiet check at ${clock(m.created_at)}">✓ All clear · ${esc(m.body)} <span class="muted">· ${clock(m.created_at)}</span></div>`;
   const b = bot(m.author) || { name: 'Deleted bot', color: '#555' };
   if (m.kind === 'trace') return renderTrace(m, prev);
   if (m.kind === 'approval') return renderApproval(m, b, prev);
-  return `<div class="msg bot ${m.kind === 'error' ? 'error' : ''}" data-mid="${m.id}" title="${clock(m.created_at)}">${speakerLabel(m, prev)}<div class="bubble md">${md(m.body)}</div></div>`;
+  return `<div class="msg bot ${m.kind === 'error' ? 'error' : ''}" data-mid="${m.id}" title="${clock(m.created_at)}">${speakerLabel(m, prev)}<div class="bubble md">${md(m.body)}</div>
+    <div class="msg-actions"><button data-copy="${m.id}">Copy</button>${m.kind === 'error' ? '<button data-continue="1">Try again</button>' : `<button data-speak="${m.id}">▶ Read aloud</button><button data-continue="1">Continue</button>`}</div></div>`;
 }
 
 // While a bot works, the label cycles through cloud-themed phrases. The phrase is picked from the
@@ -613,7 +674,11 @@ function renderApproval(m, b, prev) {
     ${pending ? `<div class="row">
       <button class="btn primary" data-approve="${a.approvalId}">Approve</button>
       <button class="btn" data-reject="${a.approvalId}">Reject…</button>
-      <label><input type="checkbox" data-remember="${a.approvalId}"> Always allow</label>
+      <label>Then <select data-remember="${a.approvalId}">
+        <option value="">ask again next time</option>
+        <option value="exact">always allow ${a.tool === 'Bash' ? 'this exact command' : 'this tool'}</option>
+        ${a.pattern ? `<option value="pattern">always allow “${esc(a.pattern)}”</option>` : ''}
+      </select></label>
     </div>` : ''}
   </div></div>`;
 }
@@ -777,7 +842,8 @@ function botModal(b) {
     <details class="adv"><summary>Approval rules</summary>
       <label class="field">Ask me before (one rule per line)<textarea id="f-rules" class="code" rows="5">${esc(b.approval_rules.join('\n'))}</textarea>
         <span class="hint">Tool names with * wildcards. Bash(pattern) matches commands, e.g. Bash(git push*). Plugin tools start with mcp__.</span></label>
-      <label class="field">Always allow (overrides the list above)<textarea id="f-allow" class="code" rows="2">${esc(b.allow_rules.join('\n'))}</textarea></label>
+      <label class="field">Always allow (overrides the list above)<textarea id="f-allow" class="code" rows="2">${esc(b.allow_rules.join('\n'))}</textarea>
+        <span class="hint">Add <code>@self-email</code> to let this bot email only you without asking.</span></label>
     </details>
     <div class="modal-foot">
       ${isNew ? '' : '<button class="btn danger left" id="f-del">Delete bot</button>'}
@@ -890,6 +956,8 @@ function routinesModal(b) {
     <div class="panel">
       <label class="field">What should it do?<textarea id="rt-prompt" rows="2" placeholder="Triage my inbox and draft replies to clients."></textarea></label>
       <label class="field">When (cron: minute hour day month weekday)<input id="rt-cron" class="code" value="0 9 * * *"></label>
+      <label class="toggle-row"><span class="m-text"><b>Quiet check</b><span>Only tell me if something needs attention. When all is fine it leaves a small “✓ All clear” line, with no notification.</span></span>
+        <input type="checkbox" class="switch" id="rt-quiet"></label>
       <div class="chips">${PRESETS.map(([l, c]) => `<button type="button" class="chip" data-cron="${c}">${l}</button>`).join('')}</div>
       <div class="modal-foot"><button class="btn primary" id="rt-add">Add routine</button></div>
     </div>`, { wide: true });
@@ -897,7 +965,7 @@ function routinesModal(b) {
     const list = S.data.routines.filter((r) => r.bot_id === b.id);
     $('#rt-list', el).innerHTML = list.length ? list.map((r) => `
       <div class="panel">
-        <div class="top"><code>${esc(r.cron)}</code>${r.enabled ? '' : '<span class="muted">Paused</span>'}
+        <div class="top"><code>${esc(r.cron)}</code>${r.quiet ? '<span class="chip">Quiet</span>' : ''}${r.enabled ? '' : '<span class="muted">Paused</span>'}
           <span class="grow"></span>
           <button class="btn small" data-run="${r.id}">Run now</button>
           <button class="btn small" data-toggle="${r.id}" data-en="${r.enabled}">${r.enabled ? 'Pause' : 'Resume'}</button>
@@ -915,7 +983,7 @@ function routinesModal(b) {
       if (t.id === 'rt-add') {
         const prompt = $('#rt-prompt', el).value.trim();
         if (!prompt) return toast('Say what the routine should do');
-        await api('/api/routines', { method: 'POST', body: { bot_id: b.id, cron: $('#rt-cron', el).value, prompt } });
+        await api('/api/routines', { method: 'POST', body: { bot_id: b.id, cron: $('#rt-cron', el).value, prompt, quiet: $('#rt-quiet', el).checked } });
         $('#rt-prompt', el).value = '';
       }
       if (t.dataset.run) { await api(`/api/routines/${t.dataset.run}/run`, { method: 'POST' }); toast('Started'); closeModal(); return; }
@@ -1112,6 +1180,35 @@ function appearanceModal() {
   }
 }
 
+// ---------- activity log ----------
+// Everything bots did lately: each run (who asked, how long, outcome) and each approval decision.
+async function activityLogModal() {
+  const el = modal(`<div class="modal-head"><h2>Activity log</h2>
+      <div class="seg"><button data-days="1" aria-pressed="false">Today</button><button data-days="7" aria-pressed="true">7 days</button><button data-days="30" aria-pressed="false">30 days</button></div>
+      <button class="icon-btn" data-close aria-label="Close">${ICON.close}</button></div><div id="log-body" class="muted">Loading…</div>`, { wide: true });
+  const load = async (days) => {
+    const { runs, approvals } = await api('/api/activity?days=' + days);
+    const byRun = {};
+    for (const a of approvals) (byRun[a.run_id] ||= []).push(a);
+    const src = (r) => r.parent_run ? 'from another bot' : r.thread.startsWith('room:') ? 'group chat' : /^\(Scheduled/.test(r.prompt) ? 'routine' : 'you';
+    const icon = { done: '✓', error: '✗', stopped: '■', interrupted: '⚠', running: '…', queued: '…' };
+    $('#log-body', el).innerHTML = runs.length ? `<div class="log">${runs.map((r) => {
+      const b = bot(r.bot_id), secs = r.ended_at && r.started_at ? r.ended_at - r.started_at : null;
+      return `<div class="log-row ${r.status}"><span class="li">${icon[r.status] || '·'}</span>${avatar(b, 22)}
+        <div class="lt"><div><b>${esc(b?.name || 'Deleted bot')}</b> <span class="muted">${esc(src(r))} · ${stamp(r.started_at)}${secs != null ? ` · ${secs >= 60 ? Math.round(secs / 60) + ' min' : secs + 's'}` : ''} · ${esc(r.status)}</span></div>
+        <div class="lp">${esc(r.prompt.replace(/^\(Scheduled[^)]*\)\s*/, ''))}</div>
+        ${(byRun[r.id] || []).map((a) => `<div class="la ${a.status}">${ICON.lock} ${esc(describeTool(a.tool, (() => { try { return JSON.parse(a.input); } catch { return {}; } })()))} — <b>${esc(a.status)}</b>${a.note ? ` · “${esc(a.note)}”` : ''}</div>`).join('')}</div>
+        <button class="btn small" data-open="${esc(r.thread)}">Open</button></div>`; }).join('')}</div>` : '<p class="muted">Nothing in this period.</p>';
+  };
+  load(7).catch((e) => { $('#log-body', el).textContent = e.message; });
+  el.addEventListener('click', (e) => {
+    const t = e.target.closest('button'); if (!t) return;
+    if (t.dataset.close !== undefined) return closeModal();
+    if (t.dataset.days) { el.querySelectorAll('[data-days]').forEach((x) => x.setAttribute('aria-pressed', x === t)); load(Number(t.dataset.days)); }
+    if (t.dataset.open) { closeModal(); openThread(t.dataset.open); }
+  });
+}
+
 // ---------- server settings ----------
 async function serverModal() {
   let v;
@@ -1129,7 +1226,14 @@ async function serverModal() {
     <label class="field">Token ID<input id="s-pve_token_id" value="${esc(v.pve_token_id)}" placeholder="user@pve!tokenname"></label>
     <label class="field">Token secret<input id="s-pve_token_secret" ${secret('pve_token_secret')}></label>
     <div class="update-box"><button class="btn small" data-update>Update computers</button><span class="muted" id="upd-status">Rebuilds them with the latest Claude Code and Chromium. Files, browsers and sign-ins are kept; computers restart.</span></div>
+    <h3>Backups</h3>
+    <p class="muted">Every night at 3:15 Nimbus saves an encrypted copy of all bots, chats, memories and settings (last 14 kept on this server).
+      Set a target to also copy each backup to another machine. Keep the key file <code>~/opt/nimbus-backup.key</code> somewhere safe: backups can’t be opened without it.</p>
+    <label class="field">Copy backups to (optional)<input id="s-backup_target" value="${esc(v.backup_target || '')}" placeholder="user@nas:/mnt/pool/nimbus-backups"><span class="hint">Over SSH, using this server’s key.</span></label>
+    <div class="update-box"><button class="btn small" data-backup>Back up now</button><span class="muted" id="bk-status">Checking…</span></div>
     <div class="modal-foot"><button class="btn left" data-test>Test computer VM</button><button class="btn" data-close>Cancel</button><button class="btn primary" data-save>Save</button></div>`);
+  api('/api/backup').then(({ last }) => { const st = $('#bk-status', el); if (st) st.textContent = !last ? 'No backup yet.'
+    : last.ok ? `Last backup ${timeAgo(Math.round(last.at / 1000))}: ${fmtSize(last.size)}${last.remote ? ', copied to ' + last.remote : ', on this server only'}` : `✗ Last backup failed: ${last.error}`; }).catch(() => {});
   const values = () => {
     const out = {};
     for (const k of Object.keys(v)) { const i = $('#s-' + k, el); if (!i) continue; out[k] = i.type === 'password' && !i.value ? (v[k] ? '__saved__' : '') : i.value; }
@@ -1138,6 +1242,13 @@ async function serverModal() {
   el.addEventListener('click', async (e) => {
     if (e.target.closest('[data-close]')) return closeModal();
     try {
+      if (e.target.closest('[data-backup]')) {
+        await api('/api/settings', { method: 'PUT', body: values() });
+        $('#bk-status', el).textContent = 'Backing up…';
+        const r = await api('/api/backup', { method: 'POST' });
+        $('#bk-status', el).textContent = r.ok ? `✓ Saved ${fmtSize(r.size)}${r.remote ? ' and copied to ' + r.remote : ''}` : '✗ ' + r.error;
+        return;
+      }
       if (e.target.closest('[data-update]')) {
         if (!confirm('Update all bot computers now? Each one restarts, so any task running on a computer is interrupted. It takes a few minutes.')) return;
         await api('/api/computers/update', { method: 'POST' });
@@ -1325,8 +1436,14 @@ document.addEventListener('click', async (e) => {
   const cur = S.current?.type === 'bot' ? bot(S.current.id) : null;
   if (t.dataset.open) return openThread(t.dataset.open);
   if (t.dataset.computer) { const cb = bot(t.dataset.computer); if (cb) return computerModal(cb); }
+  if (t.dataset.copy) { const m = S.messages.find((x) => x.id === Number(t.dataset.copy)); await navigator.clipboard?.writeText(m?.body || '').catch(() => {}); buzz(6); return toast('Copied'); }
+  if (t.dataset.edit) { const m = S.messages.find((x) => x.id === Number(t.dataset.edit)); const ta = $('#msg'); if (ta && m) { ta.value = m.body; autosize(ta); ta.focus(); } return; }
+  if (t.dataset.retry) { const m = S.messages.find((x) => x.id === Number(t.dataset.retry)); if (m) await api(`/api/threads/${encodeURIComponent(threadKey())}/messages`, { method: 'POST', body: { text: m.body } }); return; }
+  if (t.dataset.continue) { await api(`/api/threads/${encodeURIComponent(threadKey())}/messages`, { method: 'POST', body: { text: t.textContent === 'Try again' ? 'That failed. Please try again.' : 'Continue.' } }); return; }
+  if (t.dataset.speak) return speak(t);
+  if (t.dataset.hit) return openThread(t.dataset.hitThread).then(() => flashMessage(Number(t.dataset.hit)));
   if (t.dataset.approve || t.dataset.reject) buzz(12);
-  if (t.dataset.approve) return decide(t.dataset.approve, 'approve', { remember: document.querySelector(`[data-remember="${t.dataset.approve}"]`)?.checked });
+  if (t.dataset.approve) return decide(t.dataset.approve, 'approve', { remember: document.querySelector(`[data-remember="${t.dataset.approve}"]`)?.value || '' });
   if (t.dataset.reject) return rejectModal(t.dataset.reject);
   if (t.dataset.stop) { e.preventDefault(); return api(`/api/runs/${t.dataset.stop}/stop`, { method: 'POST' }); }
   if (t.dataset.unattach) { attachments = attachments.filter((a) => a.key !== t.dataset.unattach); return drawAttachments(); }
@@ -1334,7 +1451,7 @@ document.addEventListener('click', async (e) => {
   if (act) closePopover();
   switch (act) {
     case 'new-menu': e.stopPropagation(); return popover(t, [['new-bot', 'New bot', ICON.plus], ['new-room', 'New group chat', ICON.compose], ['market', 'Browse Marketplace', ICON.grid]]);
-    case 'user-menu': e.stopPropagation(); return popover(t, [['appearance', 'Appearance', ICON.gear], ['server', 'Server settings', ICON.monitor], ['mfa', 'Two-factor authentication', ICON.lock], ['notify', 'Notifications', ICON.bell], ...(window.NimbusApp ? [['app-server', 'App: server address', ICON.gear]] : []), ['logout', 'Log out', ICON.close]]);
+    case 'user-menu': e.stopPropagation(); return popover(t, [['appearance', 'Appearance', ICON.gear], ['server', 'Server settings', ICON.monitor], ['log', 'Activity log', ICON.clock], ['mfa', 'Two-factor authentication', ICON.lock], ['notify', 'Notifications', ICON.bell], ...(window.NimbusApp ? [['app-server', 'App: server address', ICON.gear]] : []), ['logout', 'Log out', ICON.close]]);
     case 'new-bot': return botModal();
     case 'edit-bot': return botModal(cur);
     case 'new-room': return roomModal();
@@ -1348,6 +1465,7 @@ document.addEventListener('click', async (e) => {
     case 'dictate': return toggleDictation(t);
     case 'mfa': return mfaModal();
     case 'server': return serverModal();
+    case 'log': return activityLogModal();
     case 'app-server': return window.NimbusApp?.changeServer();
     case 'computer': return computerModal(cur);
     case 'reset': await api(`/api/bots/${cur.id}/reset`, { method: 'POST' }); return;
@@ -1375,6 +1493,20 @@ document.addEventListener('input', (e) => {
   if (e.target.id === 'msg') autosize(e.target);
   if (e.target.id === 'side-search') { sideQuery = e.target.value.trim().toLowerCase(); refreshSideOnly(); }
 });
+let searchSeq = 0, searchTimer;
+function searchMessages() {
+  clearTimeout(searchTimer);
+  if (sideQuery.length < 2) return;
+  searchTimer = setTimeout(async () => {
+    const seq = ++searchSeq;
+    const r = await api('/api/search?q=' + encodeURIComponent(sideQuery)).catch(() => ({ results: [] }));
+    const box = $('#side-hits'); if (!box || seq !== searchSeq) return;
+    const who = (t) => t.startsWith('bot:') ? bot(t.slice(4))?.name : room(t.slice(5))?.name;
+    box.innerHTML = `<h5>Messages</h5>` + (r.results.length ? r.results.map((h) => `<button class="side-hit" data-hit="${h.id}" data-hit-thread="${esc(h.thread)}">
+      <span class="row1"><b>${esc(who(h.thread) || h.thread)}</b><span class="time">${stamp(h.at)}</span></span>
+      <span class="sub">${esc(h.author === 'user' ? 'You: ' : '')}${esc(h.snippet)}</span></button>`).join('') : '<div class="side-empty">No messages match</div>');
+  }, 250);
+}
 function refreshSideOnly() {
   renderSide();
   const i = $('#side-search'); i.focus(); i.setSelectionRange(i.value.length, i.value.length);
