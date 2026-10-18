@@ -96,10 +96,13 @@ ${others.map((o) => `- ${o.name} (#${o.id})${o.role ? `: ${o.role}` : ''}`).join
 To ask a bot something and get its answer back, run (Bash tool, timeout 600000):
   node ${ask} "<bot name or #id>" "<message>"
 To just send it information or a task without waiting: add --no-wait before the name.
-If an answer takes longer than ~9 minutes you get a run id; fetch it later with: node ${ask} --result <run id>
+If an answer takes longer than ~4 minutes you get a run id; fetch it later with: node ${ask} --result <run id>
 - Write messages that stand on their own: the other bot can't see this chat. Include the facts, files (full paths) and what you need back.
 - Ask a teammate when the work is in its area (e.g. calendar, firewall, Proxmox) instead of doing it yourself.
-- Don't message the bot that is asking you something; put your answer in your reply instead.`;
+- Don't message the bot that is asking you something; put your answer in your reply instead.${remote ? `
+- You run on your own computer, where the Claude connectors (Gmail, Google Calendar, Drive, Docs) are not
+  available. For anything in those, ask a teammate that runs on the Nimbus server (e.g. a calendar bot).
+- Files you save under ~/Downloads or ~/work show up in Nimbus (computer dialog → Files), so the user can download them.` : ''}`;
 }
 
 // Each bot gets a workspace folder. CLAUDE.md there is its standing brief;

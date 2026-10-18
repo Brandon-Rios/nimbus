@@ -7,6 +7,9 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 
 const TOKEN = process.env.AGENT_TOKEN || '';
 const PORT = Number(process.env.AGENT_PORT || 8788);
@@ -30,9 +33,9 @@ function docker(args, input) {
   });
 }
 const json = (res, code, data) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(data)); };
-async function body(req) {
+async function body(req, limit = 5e6) {
   let s = '';
-  for await (const c of req) { s += c; if (s.length > 5e6) throw new Error('too large'); }
+  for await (const c of req) { s += c; if (s.length > limit) throw new Error('too large'); }
   return s ? JSON.parse(s) : {};
 }
 
@@ -68,7 +71,7 @@ async function ensure(id) {
 // Run Claude Code inside the bot's computer and stream its output back as JSON lines:
 // {"t":"out"|"err","d":"..."} while it runs, then {"t":"exit","code":0,"memory":"..."}.
 async function run(req, res, id) {
-  const { args = [], prompt = '', env = {}, files = {}, runId } = await body(req);
+  const { args = [], prompt = '', env = {}, files = {}, uploads = {}, runId } = await body(req, 80e6);
   await ensure(id);
   const n = name(id), work = '/config/work';
   await docker(['exec', '-u', 'abc', n, 'mkdir', '-p', work]);
@@ -78,6 +81,13 @@ async function run(req, res, id) {
   for (const [file, text] of Object.entries(files)) {
     if (!/^[\w.-]+$/.test(file)) continue;
     await docker(['exec', '-i', '-u', 'abc', n, 'sh', '-c', `mkdir -p ${work} && cat > ${work}/${file}`], String(text));
+  }
+  // Files the user attached in Nimbus, as "<upload id>/<file name>": base64, into ~/work/uploads/.
+  for (const [rel, b64] of Object.entries(uploads)) {
+    const m = rel.match(/^([a-f0-9]{24})\/([^/\0]{1,120})$/);
+    if (!m || m[2].startsWith('.')) continue;
+    const dir = `${work}/uploads/${m[1]}`;
+    await docker(['exec', '-i', '-u', 'abc', n, 'sh', '-c', 'mkdir -p "$1" && cat > "$1/$2"', 'sh', dir, m[2]], Buffer.from(String(b64), 'base64'));
   }
   const pidFile = `/tmp/nimbus-run-${Number(runId) || 0}.pid`;
   const envArgs = Object.entries({ HOME: '/config', DISPLAY: ':1', PLAYWRIGHT_BROWSERS_PATH: '/opt/ms-playwright', ...(CLAUDE_TOKEN ? { CLAUDE_CODE_OAUTH_TOKEN: CLAUDE_TOKEN } : {}), ...env })
@@ -102,16 +112,88 @@ async function run(req, res, id) {
   });
 }
 
+// ---------- status of all computers ----------
+async function list() {
+  const ps = await docker(['ps', '-a', '--filter', 'label=nimbus.bot', '--format', '{{.Label "nimbus.bot"}}|{{.State}}|{{.Names}}']);
+  const stats = await docker(['stats', '--no-stream', '--format', '{{.Name}}|{{.MemUsage}}|{{.CPUPerc}}']);
+  const mem = Object.fromEntries(stats.out.split('\n').filter(Boolean).map((l) => { const [n, m, c] = l.split('|'); return [n, { mem: m.split(' / ')[0], cpu: c }]; }));
+  const computers = ps.out.split('\n').filter(Boolean).map((l) => { const [bot, state, n] = l.split('|'); return { bot: Number(bot), running: state === 'running', ...(mem[n] || {}) }; });
+  const total = os.totalmem(), free = os.freemem();
+  return { computers, vm: { memTotal: total, memUsed: total - free, cpus: os.cpus().length, load: os.loadavg()[0] } };
+}
+
+// ---------- files in a bot's home folder ----------
+// Only inside /config (the bot's home volume); paths are relative to it.
+function safeRel(p) {
+  const rel = path.posix.normalize('/' + String(p || '')).replace(/^\/+/, '');
+  if (rel.split('/').some((x) => x === '..')) throw new Error('bad path');
+  return rel;
+}
+async function listFiles(id, dir) {
+  const rel = safeRel(dir), abs = '/config/' + rel;
+  const r = await docker(['exec', '-u', 'abc', name(id), 'find', abs, '-mindepth', '1', '-maxdepth', '1', '-not', '-name', '.*', '-printf', '%y|%s|%T@|%f\\n']);
+  if (r.code !== 0) return { dir: rel, items: [], error: r.err.includes('No such') ? 'Folder not found' : r.err };
+  const items = r.out.split('\n').filter(Boolean).map((l) => { const [t, size, mtime, ...nm] = l.split('|'); return { name: nm.join('|'), dir: t === 'd', size: Number(size), mtime: Math.round(Number(mtime)) }; })
+    .sort((a, b) => (b.dir - a.dir) || b.mtime - a.mtime);
+  return { dir: rel, items };
+}
+async function sendFile(res, id, p) {
+  const rel = safeRel(p);
+  const st = await docker(['exec', '-u', 'abc', name(id), 'stat', '-c', '%F|%s', '/config/' + rel]);
+  if (st.code !== 0 || !st.out.startsWith('regular file')) return json(res, 404, { error: 'not found' });
+  res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': st.out.split('|')[1] });
+  const c = spawn('docker', ['exec', '-u', 'abc', name(id), 'cat', '/config/' + rel]);
+  c.stdout.pipe(res);
+  c.on('error', () => res.destroy());
+}
+
+// ---------- rebuild the image and recreate computers (home folders are kept) ----------
+let updateState = { running: false, log: '', done: null, ok: null };
+async function startUpdate({ dockerfile, hook }) {
+  if (updateState.running) return updateState;
+  if (!dockerfile || !hook) throw new Error('dockerfile and hook are required');
+  updateState = { running: true, log: 'Building the computer image…\n', started: Date.now(), done: null, ok: null };
+  (async () => {
+    const ctx = fs.mkdtempSync(path.join(os.tmpdir(), 'nimbus-build-'));
+    try {
+      fs.mkdirSync(path.join(ctx, 'hooks'));
+      fs.mkdirSync(path.join(ctx, 'deploy/computer'), { recursive: true });
+      fs.writeFileSync(path.join(ctx, 'deploy/computer/Dockerfile'), dockerfile);
+      fs.writeFileSync(path.join(ctx, 'hooks/approval-hook.js'), hook);
+      const b = await docker(['build', '--pull', '--build-arg', `CACHEBUST=${Date.now()}`, '-f', path.join(ctx, 'deploy/computer/Dockerfile'), '-t', IMAGE, ctx]);
+      updateState.log += (b.err || b.out).split('\n').slice(-15).join('\n') + '\n';
+      if (b.code !== 0) throw new Error('image build failed');
+      const ids = (await docker(['ps', '-a', '--filter', 'label=nimbus.bot', '--format', '{{.Label "nimbus.bot"}}|{{.State}}'])).out.split('\n').filter(Boolean);
+      for (const l of ids) {
+        const [id, state] = l.split('|');
+        await docker(['rm', '-f', name(id)]);
+        if (state === 'running') await ensure(id); else { await ensure(id); await docker(['stop', name(id)]); }
+        updateState.log += `Recreated computer for bot ${id}\n`;
+      }
+      await docker(['image', 'prune', '-f']);
+      updateState.ok = true;
+    } catch (e) { updateState.ok = false; updateState.log += 'Error: ' + e.message + '\n'; }
+    finally { updateState.running = false; updateState.done = Date.now(); fs.rmSync(ctx, { recursive: true, force: true }); }
+  })();
+  return updateState;
+}
+
 http.createServer(async (req, res) => {
   try {
     const auth = String(req.headers.authorization || '');
     const ok = auth.length === TOKEN.length + 7 && crypto.timingSafeEqual(Buffer.from(auth), Buffer.from('Bearer ' + TOKEN));
     if (!ok) return json(res, 401, { error: 'bad token' });
-    const m = req.url.match(/^\/computers\/(\d+)(\/run)?$/);
-    if (req.url === '/health') return json(res, 200, { ok: true, docker: (await docker(['version', '-f', '{{.Server.Version}}'])).out || null });
+    const url = new URL(req.url, 'http://x');
+    if (url.pathname === '/health') return json(res, 200, { ok: true, docker: (await docker(['version', '-f', '{{.Server.Version}}'])).out || null });
+    if (url.pathname === '/computers' && req.method === 'GET') return json(res, 200, await list());
+    if (url.pathname === '/update') return req.method === 'POST' ? json(res, 200, await startUpdate(await body(req))) : json(res, 200, updateState);
+    const m = url.pathname.match(/^\/computers\/(\d+)(\/run|\/stop|\/files|\/file)?$/);
     if (!m) return json(res, 404, { error: 'not found' });
     const id = Number(m[1]);
-    if (m[2] && req.method === 'POST') return await run(req, res, id);
+    if (m[2] === '/run' && req.method === 'POST') return await run(req, res, id);
+    if (m[2] === '/stop' && req.method === 'POST') { await docker(['stop', '-t', '10', name(id)]); return json(res, 200, await info(id)); }
+    if (m[2] === '/files') return json(res, 200, await listFiles(id, url.searchParams.get('dir') || ''));
+    if (m[2] === '/file') return await sendFile(res, id, url.searchParams.get('path') || '');
     if (req.method === 'GET') return json(res, 200, await info(id));
     if (req.method === 'POST') return json(res, 200, await ensure(id));
     if (req.method === 'DELETE') {

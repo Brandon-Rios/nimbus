@@ -139,6 +139,10 @@ Voice dictation: the mic button records in the browser (HTTPS only) and Nimbus t
 whisper.cpp (`~/opt/whisper.cpp`, model `~/opt/whisper-models/ggml-small.en.bin`; override with
 `NIMBUS_WHISPER_BIN` / `NIMBUS_WHISPER_MODEL`). Nimbus starts the whisper server itself on 127.0.0.1:8178.
 
+Bot computers: attachments are copied to the bot's computer with each task; the computer dialog has a Files tab
+to download what the bot saved (~/Downloads, ~/work); idle computers sleep after 2 h (`NIMBUS_COMPUTER_SLEEP_MIN`, 0 = never)
+and wake on the next task; Server settings → Update computers rebuilds them with the latest Claude Code and Chromium.
+
 Secrets that look like API keys, tokens or passwords are masked as `[REDACTED]` before chat
 messages, run logs and approvals are saved. The bot still receives your original message.
 

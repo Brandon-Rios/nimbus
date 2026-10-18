@@ -9,7 +9,9 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends nodejs \
  && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g @anthropic-ai/claude-code
+# Changes on every 'Update computers', so Claude Code and Chromium are always fetched fresh.
+ARG CACHEBUST=0
+RUN echo "build $CACHEBUST" && npm install -g @anthropic-ai/claude-code@latest
 
 # Chromium for the Browser plugin. It opens on the bot's desktop, so you can watch it.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright

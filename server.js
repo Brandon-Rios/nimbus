@@ -230,6 +230,58 @@ route('DELETE', '/api/bots/:id/computer', (req, res, p) => computerRoute(res, as
   return { ok: true };
 }));
 
+// Status of every bot computer plus the VM's memory, for the app (cached briefly; docker stats is slow).
+let compCache = null;
+route('GET', '/api/computers', async (req, res) => {
+  if (!computersOn()) return json(res, 200, { on: false });
+  if (compCache && Date.now() - compCache.at < 10_000) return json(res, 200, compCache.data);
+  try { compCache = { at: Date.now(), data: { on: true, ...(await agent('/computers')), sleepAfterMin: SLEEP_AFTER_MIN } }; json(res, 200, compCache.data); }
+  catch (e) { json(res, 200, { on: true, error: e.message }); }
+});
+// Browse and download files from a bot's home folder on its computer (~/Downloads, ~/work, …).
+route('GET', '/api/bots/:id/files', (req, res, p, url) => computerRoute(res, () => agent(`/computers/${Number(p.id)}/files?dir=${encodeURIComponent(url.searchParams.get('dir') || '')}`)));
+route('GET', '/api/bots/:id/file', async (req, res, p, url) => {
+  if (!computersOn()) return json(res, 400, { error: 'Bot computers aren’t set up' });
+  const rel = String(url.searchParams.get('path') || '');
+  try {
+    const { url: base, token } = agentConfig();
+    const r = await fetch(`${base}/computers/${Number(p.id)}/file?path=${encodeURIComponent(rel)}`, { headers: { authorization: `Bearer ${token}` } });
+    if (!r.ok) return json(res, r.status, { error: 'File not found' });
+    res.writeHead(200, { 'content-type': 'application/octet-stream', 'x-content-type-options': 'nosniff',
+      ...(r.headers.get('content-length') ? { 'content-length': r.headers.get('content-length') } : {}),
+      'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(rel.split('/').pop() || 'file')}` });
+    for await (const chunk of r.body) res.write(chunk);
+    res.end();
+  } catch (e) { if (!res.headersSent) json(res, 502, { error: e.message }); else res.destroy(); }
+});
+// Rebuild the computer image with the latest Claude Code and Chromium, then recreate the computers
+// (home folders, browser profiles and sign-ins are kept). Runs on the VM; poll GET for progress.
+route('POST', '/api/computers/update', (req, res) => computerRoute(res, () => agent('/update', { method: 'POST', body: JSON.stringify({
+  dockerfile: fs.readFileSync(path.join(HERE, 'deploy/computer/Dockerfile'), 'utf8'),
+  hook: fs.readFileSync(path.join(HERE, 'hooks/approval-hook.js'), 'utf8') }) })));
+route('GET', '/api/computers/update', (req, res) => computerRoute(res, () => agent('/update')));
+
+// Auto-sleep: stop a computer that hasn't run a task or been watched for a while. Its next task (or
+// opening its screen) starts it again; files, the browser profile and sign-ins live on its volume.
+const SLEEP_AFTER_MIN = Number(process.env.NIMBUS_COMPUTER_SLEEP_MIN ?? 120);
+const deskSeen = new Map(); // botId -> last time someone was watching its screen
+setInterval(async () => {
+  if (!SLEEP_AFTER_MIN || !computersOn()) return;
+  try {
+    const { computers } = await agent('/computers');
+    for (const c of computers.filter((x) => x.running)) {
+      const last = q("SELECT MAX(COALESCE(ended_at, started_at, unixepoch())) AS t FROM runs WHERE bot_id=?").get(c.bot).t || 0;
+      const busy = q("SELECT COUNT(*) AS n FROM runs WHERE bot_id=? AND status IN ('queued','running')").get(c.bot).n;
+      const idleMs = Date.now() - Math.max(last * 1000, deskSeen.get(c.bot) || 0);
+      if (!busy && idleMs > SLEEP_AFTER_MIN * 60_000) {
+        await agent(`/computers/${c.bot}/stop`, { method: 'POST' });
+        deskCache.delete(c.bot); compCache = null;
+        console.log(`Computer for bot ${c.bot} went to sleep after ${Math.round(idleMs / 60000)} min idle`);
+      }
+    }
+  } catch {}
+}, 5 * 60_000).unref();
+
 route('GET', '/api/bots/:id/memory', (req, res, p) => json(res, 200, { text: fs.readFileSync(path.join(botDir(p.id), 'MEMORY.md'), 'utf8') }));
 route('PUT', '/api/bots/:id/memory', async (req, res, p) => {
   fs.writeFileSync(path.join(botDir(p.id), 'MEMORY.md'), String((await body(req)).text || ''));
@@ -537,6 +589,8 @@ route('POST', '/api/hook/pretool', async (req, res) => {
 });
 // Bot-to-bot messages (bin/ask-bot.mjs). The asking bot's run id gives who is asking and the
 // chain of bots already waiting, so a bot can't message one that is waiting on it (that would deadlock).
+// Answers wait at most 4 minutes: Node's fetch gives up on a response with no headers after 5, so
+// longer jobs return a run id to collect with --result.
 const MAX_ASK_DEPTH = 4;
 function askChain(runId) {
   const bots = [];
@@ -588,11 +642,11 @@ route('POST', '/api/hook/ask', async (req, res) => {
   const runId = runBot({ botId: target.id, thread, source: from.name, parentRun: Number(fromRun), depth: chain.length,
     prompt: `Message from ${from.name}, another Nimbus bot (not the user):\n\n${String(text).trim()}\n\n${wait ? `Your reply is sent back to ${from.name}, so answer what it needs.` : `${from.name} isn't waiting for a reply; act on this if it's in your area.`}` });
   if (!wait) return json(res, 200, { queued: true, runId, to: target.name });
-  json(res, 200, { to: target.name, ...(await askResult(runId, 9 * 60_000)) });
+  json(res, 200, { to: target.name, ...(await askResult(runId, 4 * 60_000)) });
 });
 route('GET', '/api/hook/ask/:runId', async (req, res, p) => {
   if (!hookAuth(req)) return json(res, 403, { error: 'forbidden' });
-  json(res, 200, await askResult(Number(p.runId), 9 * 60_000));
+  json(res, 200, await askResult(Number(p.runId), 4 * 60_000));
 });
 route('GET', '/api/hook/approval/:id', (req, res, p) => {
   if (!hookAuth(req)) return json(res, 403, { error: 'forbidden' });
@@ -842,7 +896,8 @@ const deskCache = new Map(); // botId -> { at, info }
 async function deskInfo(id) {
   const c = deskCache.get(id);
   if (c && Date.now() - c.at < 60_000) return c.info;
-  const info = await agent(`/computers/${id}`);
+  let info = await agent(`/computers/${id}`);
+  if (info.exists && !info.running) info = await agent(`/computers/${id}`, { method: 'POST' }); // asleep: wake it
   if (!info.exists || !info.port) throw new Error('This bot’s computer isn’t running');
   const r = { host: new URL(agentConfig().url).hostname, port: info.port, auth: 'Basic ' + Buffer.from(`${info.user}:${info.password}`).toString('base64') };
   deskCache.set(id, { at: Date.now(), info: r });
@@ -851,6 +906,7 @@ async function deskInfo(id) {
 const DESK_RE = /^\/computer\/(\d+)(\/.*)?$/;
 const HOP = new Set(['connection', 'keep-alive', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade', 'host', 'cookie', 'authorization']);
 async function proxyDesktop(req, res, m, url) {
+  deskSeen.set(Number(m[1]), Date.now());
   if (!m[2]) { res.writeHead(302, { location: `/computer/${m[1]}/` }); return res.end(); }
   let d;
   try { d = await deskInfo(Number(m[1])); } catch (e) { res.writeHead(502, { 'content-type': 'text/plain' }); return res.end(e.message); }
@@ -867,6 +923,7 @@ async function proxyDesktopUpgrade(req, socket, head) {
   const url = new URL(req.url, 'http://x');
   const m = url.pathname.match(DESK_RE);
   if (!m || !loggedIn(req)) { socket.end('HTTP/1.1 401 Unauthorized\r\n\r\n'); return; }
+  deskSeen.set(Number(m[1]), Date.now());
   let d;
   try { d = await deskInfo(Number(m[1])); } catch { socket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n'); return; }
   const up = net.connect(d.port, d.host, () => {
@@ -880,8 +937,9 @@ async function proxyDesktopUpgrade(req, socket, head) {
     if (head?.length) up.write(head);
     up.pipe(socket); socket.pipe(up);
   });
-  const close = () => { up.destroy(); socket.destroy(); };
-  up.on('error', close); socket.on('error', close);
+  const watching = setInterval(() => deskSeen.set(Number(m[1]), Date.now()), 60_000); // screen open = not idle
+  const close = () => { clearInterval(watching); up.destroy(); socket.destroy(); };
+  up.on('error', close); socket.on('error', close); socket.on('close', close);
 }
 
 async function handle(req, res) {

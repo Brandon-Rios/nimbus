@@ -291,10 +291,12 @@ function renderAside() {
       ${d.learned.length ? d.learned.map((l) => `<div class="learned">“${esc(l.text)}” <span class="muted">· ${esc(bot(l.botId)?.name)}</span></div>`).join('')
         : '<div class="muted">When you tell a bot a rule, it shows up here.</div>'}
     </section>
+    ${d.computers ? '<section id="comp-box"><h4>Bot computers</h4><div class="muted">Loading…</div></section>' : ''}
     ${d.proxmox ? '<section id="pve-box"><h4>Proxmox</h4><div class="muted">Loading…</div></section>' : ''}
     <section class="usage" id="usage-box">${usageFallback(d, pct)}</section>`;
   loadPlanUsage();
   if (d.proxmox) loadProxmox();
+  if (d.computers) loadComputers();
 }
 
 // Plan usage: the real % of your Claude plan's limits left (like /usage in Claude Code).
@@ -327,6 +329,28 @@ function drawPlanUsage(p) {
       <div class="meter ${w.used >= 90 ? 'hot' : w.used >= 70 ? 'warm' : ''}"><div style="width:${Math.min(100, w.used)}%"></div></div>
       <div class="muted small">${Math.round(w.used)}% used${w.resets ? ` · resets in ${resetsIn(w.resets)}` : ''}</div>`;
   }).join('') + `<div class="muted">${d.usage.running} running · ${d.bots.filter((b) => b.status.state === 'working').length} bots busy</div>`;
+}
+
+// Bot computers: which are awake or asleep, their memory, and the VM's memory.
+let compLast = null, compAt = 0;
+async function loadComputers() {
+  if (compLast) drawComputers(compLast);
+  if (Date.now() - compAt < 15000) return;
+  compAt = Date.now();
+  try { compLast = await api('/api/computers'); } catch (err) { compLast = { error: err.message }; }
+  drawComputers(compLast);
+}
+function drawComputers(c) {
+  const box = $('#comp-box'); if (!box) return;
+  if (c.error) { box.innerHTML = `<h4>Bot computers</h4><div class="muted">Couldn’t reach the computer VM: ${esc(c.error)}</div>`; return; }
+  const pct = c.vm ? Math.round((c.vm.memUsed / c.vm.memTotal) * 100) : 0;
+  box.innerHTML = `<h4>Bot computers</h4>
+    ${(c.computers || []).length ? c.computers.map((x) => `<button class="card-item comp-row" data-computer="${x.bot}">${avatar(bot(x.bot), 26)}
+      <span><small>${x.running ? `<span class="dot-inline on"></span>Awake${x.mem ? ` · ${esc(x.mem)}` : ''}` : '<span class="dot-inline"></span>Asleep'}</small>${esc(bot(x.bot)?.name || 'Bot ' + x.bot)}</span></button>`).join('')
+      : '<div class="muted">No bot has its own computer yet.</div>'}
+    ${c.vm ? `<div class="row"><span>VM memory</span><span>${(c.vm.memUsed / 2 ** 30).toFixed(1)} of ${(c.vm.memTotal / 2 ** 30).toFixed(1)} GB</span></div>
+      <div class="meter ${pct >= 90 ? 'hot' : pct >= 75 ? 'warm' : ''}"><div style="width:${pct}%"></div></div>` : ''}
+    ${c.sleepAfterMin ? `<div class="muted small">Idle computers sleep after ${c.sleepAfterMin >= 60 ? c.sleepAfterMin / 60 + ' h' : c.sleepAfterMin + ' min'}.</div>` : ''}`;
 }
 
 // Host load and guest status, fetched separately so a slow Proxmox never delays the app.
@@ -1104,6 +1128,7 @@ async function serverModal() {
     <label class="field">Host<input id="s-pve_host" value="${esc(v.pve_host)}" placeholder="<proxmox-host-ip>"></label>
     <label class="field">Token ID<input id="s-pve_token_id" value="${esc(v.pve_token_id)}" placeholder="user@pve!tokenname"></label>
     <label class="field">Token secret<input id="s-pve_token_secret" ${secret('pve_token_secret')}></label>
+    <div class="update-box"><button class="btn small" data-update>Update computers</button><span class="muted" id="upd-status">Rebuilds them with the latest Claude Code and Chromium. Files, browsers and sign-ins are kept; computers restart.</span></div>
     <div class="modal-foot"><button class="btn left" data-test>Test computer VM</button><button class="btn" data-close>Cancel</button><button class="btn primary" data-save>Save</button></div>`);
   const values = () => {
     const out = {};
@@ -1113,6 +1138,21 @@ async function serverModal() {
   el.addEventListener('click', async (e) => {
     if (e.target.closest('[data-close]')) return closeModal();
     try {
+      if (e.target.closest('[data-update]')) {
+        if (!confirm('Update all bot computers now? Each one restarts, so any task running on a computer is interrupted. It takes a few minutes.')) return;
+        await api('/api/computers/update', { method: 'POST' });
+        const st = $('#upd-status', el), btn = e.target.closest('[data-update]');
+        btn.disabled = true;
+        const poll = async () => {
+          const u = await api('/api/computers/update').catch(() => null);
+          if (!document.body.contains(st)) return;
+          if (u?.running) { st.textContent = 'Updating… ' + (u.log.trim().split('\n').pop() || ''); return setTimeout(poll, 4000); }
+          btn.disabled = false;
+          st.textContent = u?.ok ? '✓ Computers updated.' : '✗ Update failed: ' + (u?.log.trim().split('\n').pop() || 'unknown error');
+          compAt = 0;
+        };
+        st.textContent = 'Updating…'; return poll();
+      }
       if (e.target.closest('[data-test]')) {
         await api('/api/settings', { method: 'PUT', body: values() });
         const h = await api('/api/settings/test-agent', { method: 'POST' });
@@ -1129,12 +1169,18 @@ async function serverModal() {
 // ---------- bot computers ----------
 async function computerModal(b) {
   if (!window.isSecureContext && !S.httpsPort) S.httpsPort = (await api('/api/https-port').catch(() => ({}))).port;
-  const el = modal(`<div class="modal-head"><h2>${esc(b.name)}’s computer</h2><button class="icon-btn" data-close aria-label="Close">${ICON.close}</button></div>
+  const el = modal(`<div class="modal-head"><h2>${esc(b.name)}’s computer</h2>
+      <div class="seg cm-tabs"><button data-tab="screen" aria-pressed="true">Screen</button><button data-tab="files" aria-pressed="false">Files</button></div>
+      <button class="icon-btn" data-close aria-label="Close">${ICON.close}</button></div>
     <div id="cm-body"><div class="muted">Checking…</div></div>`, { wide: true, cls: 'computer' });
-  const draw = (c) => {
+  let tab = 'screen', dir = 'Downloads', info = null;
+  const drawScreen = (c) => {
     $('#cm-body', el).innerHTML = !c.exists
       ? `<p>${esc(b.name)} doesn’t have a computer yet. It gets one automatically on its next task, or you can start it now to sign it into websites first.</p>
          <div class="modal-foot"><button class="btn primary" data-start>Start computer</button></div>`
+      : !c.running
+      ? `<p>😴 ${esc(b.name)}’s computer is asleep to save memory. It wakes up by itself on the next task, with its files, browser and sign-ins as they were.</p>
+         <div class="modal-foot"><button class="btn primary" data-start>Wake it now</button></div>`
       : !window.isSecureContext
       ? `<p>The desktop needs a secure (HTTPS) connection, and this page is plain HTTP.</p>
          <p class="muted">Open Nimbus over HTTPS instead. The first time, your browser warns that the certificate isn’t trusted: choose <b>Advanced → Proceed</b>. It’s Nimbus’s own certificate on your network.</p>
@@ -1148,16 +1194,44 @@ async function computerModal(b) {
          </div>
          <p class="muted">You can use this screen yourself, for example to sign ${esc(b.name)} into a website. Anything the bot opens in its browser shows up here.</p>`;
   };
+  // Files: the bot's home folder on its computer. Downloads first, since that's where browser downloads land.
+  const drawFiles = async () => {
+    const body = $('#cm-body', el);
+    if (!info?.exists) { body.innerHTML = `<p class="muted">${esc(b.name)} doesn’t have a computer yet.</p>`; return; }
+    body.innerHTML = '<div class="muted">Loading files…</div>';
+    let r;
+    try { r = await api(`/api/bots/${b.id}/files?dir=${encodeURIComponent(dir)}`); } catch (err) { body.innerHTML = `<p class="muted">${esc(err.message)}</p>`; return; }
+    const parts = r.dir ? r.dir.split('/') : [];
+    const crumbs = [`<button class="link" data-dir="">Home</button>`, ...parts.map((p, i) => `<button class="link" data-dir="${esc(parts.slice(0, i + 1).join('/'))}">${esc(p)}</button>`)].join(' / ');
+    const hidden = new Set(['browser-profile', 'ssl', 'Templates', 'Public']);
+    const nimbusFiles = new Set(['CLAUDE.md', 'MEMORY.md', 'ask-bot.mjs']); // Nimbus's own files in ~/work
+    const items = r.items.filter((it) => (r.dir ? !(r.dir === 'work' && nimbusFiles.has(it.name)) : !hidden.has(it.name)));
+    body.innerHTML = `<div class="files-bar"><span>${crumbs}</span><span class="grow"></span>
+        ${['Downloads', 'work', 'Desktop'].map((d) => `<button class="btn small ${r.dir === d ? 'primary' : ''}" data-dir="${d}">${d === 'work' ? 'Bot’s work' : d}</button>`).join('')}
+        <button class="icon-btn" data-dir="${esc(r.dir)}" title="Refresh" aria-label="Refresh">↻</button></div>
+      ${r.error ? `<p class="muted">${esc(r.error === 'Folder not found' ? 'This folder is empty or doesn’t exist yet.' : r.error)}</p>` : ''}
+      <div class="file-list">${items.length ? items.map((it) => {
+        const rel = (r.dir ? r.dir + '/' : '') + it.name;
+        return it.dir
+          ? `<button class="file-row" data-dir="${esc(rel)}"><span class="fi">📁</span><span class="fn">${esc(it.name)}</span><span class="fm">${timeAgo(it.mtime)}</span></button>`
+          : `<a class="file-row" href="/api/bots/${b.id}/file?path=${encodeURIComponent(rel)}" download><span class="fi">📄</span><span class="fn">${esc(it.name)}</span><span class="fm">${fmtSize(it.size)} · ${timeAgo(it.mtime)}</span><span class="fd">⬇</span></a>`;
+      }).join('') : (r.error ? '' : '<p class="muted">Nothing here yet. When the bot downloads or saves files here, you can download them.</p>')}</div>`;
+  };
+  const draw = () => (tab === 'screen' ? drawScreen(info) : drawFiles());
   const load = async (method = 'GET') => {
-    try { draw(await api(`/api/bots/${b.id}/computer`, { method })); }
+    try { info = await api(`/api/bots/${b.id}/computer`, { method }); draw(); }
     catch (err) { $('#cm-body', el).innerHTML = `<p class="muted">${esc(err.message)}</p>`; }
   };
   load();
   el.addEventListener('click', async (e) => {
     if (e.target.closest('[data-close]')) return closeModal();
+    const tb = e.target.closest('[data-tab]');
+    if (tb) { tab = tb.dataset.tab; el.querySelectorAll('[data-tab]').forEach((x) => x.setAttribute('aria-pressed', x === tb)); return info ? draw() : load(); }
+    const dv = e.target.closest('[data-dir]');
+    if (dv) { dir = dv.dataset.dir; return drawFiles(); }
     const rv = e.target.closest('[data-reveal]');
     if (rv) { rv.outerHTML = `<code class="secret-inline">${esc(rv.dataset.reveal)}</code>`; return; }
-    if (e.target.closest('[data-start]')) { $('#cm-body', el).innerHTML = '<div class="muted">Starting… the first start can take a minute.</div>'; return load('POST'); }
+    if (e.target.closest('[data-start]')) { $('#cm-body', el).innerHTML = '<div class="muted">Starting… this can take up to a minute.</div>'; return load('POST'); }
     if (e.target.closest('[data-delete]')) {
       if (!confirm(`Delete ${b.name}’s computer? Its files, browser and sign-ins are erased. The bot stays, and works on this PC until you turn “Own computer” back on.`)) return;
       try { await api(`/api/bots/${b.id}/computer`, { method: 'DELETE' }); closeModal(); await refreshState(); renderMain(); toast('Computer deleted'); }
@@ -1250,6 +1324,7 @@ document.addEventListener('click', async (e) => {
   if (t.closest('#modal-root')) return;
   const cur = S.current?.type === 'bot' ? bot(S.current.id) : null;
   if (t.dataset.open) return openThread(t.dataset.open);
+  if (t.dataset.computer) { const cb = bot(t.dataset.computer); if (cb) return computerModal(cb); }
   if (t.dataset.approve || t.dataset.reject) buzz(12);
   if (t.dataset.approve) return decide(t.dataset.approve, 'approve', { remember: document.querySelector(`[data-remember="${t.dataset.approve}"]`)?.checked });
   if (t.dataset.reject) return rejectModal(t.dataset.reject);

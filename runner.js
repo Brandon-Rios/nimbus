@@ -66,10 +66,23 @@ function remoteRun(bot, dir, runId, args, prompt, env) {
       const memFile = path.join(dir, 'MEMORY.md');
       const files = { 'CLAUDE.md': fs.readFileSync(path.join(dir, 'CLAUDE.md'), 'utf8'), 'MEMORY.md': fs.readFileSync(memFile, 'utf8'),
         'ask-bot.mjs': fs.readFileSync(ASK_BOT, 'utf8') }; // lets this bot message its teammates
+      // Attachments live on the Nimbus server; copy the ones this prompt mentions to the bot's computer
+      // and point the prompt at the copies (~/work/uploads/<id>/<name>).
+      const uploads = {};
+      const upDir = path.join(path.dirname(dir), '..', 'uploads');
+      let total = 0;
+      prompt = prompt.replace(/(\/[^\s]*\/uploads\/([a-f0-9]{24})\/([^\n]+?)) \(/g, (all, abs, id, name) => {
+        const local = path.join(upDir, id, name);
+        if (!fs.existsSync(local) || path.resolve(local) !== path.resolve(abs)) return all;
+        const buf = fs.readFileSync(local);
+        if ((total += buf.length) > 50 * 1024 * 1024) return all; // keep a run's upload under 50 MB
+        uploads[`${id}/${name}`] = buf.toString('base64');
+        return `/config/work/uploads/${id}/${name} (`;
+      });
       const res = await fetch(`${agentConfig().url}/computers/${bot.id}/run`, {
         method: 'POST', signal: ac.signal,
         headers: { authorization: `Bearer ${agentConfig().token}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ args, prompt, env, files, runId })
+        body: JSON.stringify({ args, prompt, env, files, uploads, runId })
       });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
       let buf = '';
