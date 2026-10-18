@@ -462,3 +462,10 @@ body, .side, .aside, .modal, .bubble { transition-property: background-color, co
 .log-row .lp { color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .log-row .la { font-size: 12px; margin-top: 3px; display: flex; gap: 5px; align-items: center; color: var(--muted); }
 .log-row .la.approved b { color: var(--ok); } .log-row .la.rejected b, .log-row .la.expired b { color: var(--bad); }
+/* Drag to reorder the sidebar */
+.side-item.dragging { position: relative; z-index: 5; background: var(--panel); box-shadow: 0 10px 30px rgba(0,0,0,.35); transition: box-shadow .2s, background-color .2s; cursor: grabbing; }
+body.reordering, body.reordering * { user-select: none; -webkit-user-select: none; cursor: grabbing; }
+.side-item { -webkit-touch-callout: none; }
+.side-reset { display: block; width: 100%; padding: 8px; margin-top: 4px; font-size: 12px; color: var(--muted); border-radius: 8px; }
+.side-reset:hover { background: var(--hover); color: var(--text); }
+.side-hint { text-align: center; font-size: 11.5px; color: var(--faint); padding: 8px 0 2px; }

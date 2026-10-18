@@ -244,6 +244,11 @@ function renderSide() {
     ...d.rooms.map((r) => ({ key: 'room:' + r.id, name: r.name, av: roomAvatar(r, 38), state: r.members.some((id) => bot(id)?.status.state === 'working') ? 'working' : 'idle', last: d.last['room:' + r.id], fallback: `${r.members.length} bots`, created: r.created_at }))
   ].filter((it) => !sideQuery || it.name.toLowerCase().includes(sideQuery))
     .sort((a, b) => (b.last?.at || b.created || 0) - (a.last?.at || a.created || 0));
+  // Your own order (from dragging) wins; chats not placed yet stay on top, newest first.
+  if (d.sideOrder) {
+    const pos = new Map(d.sideOrder.map((k, i) => [k, i]));
+    items.sort((a, b) => (pos.has(a.key) ? pos.get(a.key) : -1) - (pos.has(b.key) ? pos.get(b.key) : -1));
+  }
   const pending = d.approvals.length;
   $('#side').innerHTML = `
     <div class="side-top">
@@ -252,13 +257,14 @@ function renderSide() {
     </div>
     <div class="side-list">
       ${items.length ? items.map((it) => `
-        <button class="side-item ${key === it.key ? 'active' : ''}" data-open="${it.key}">
+        <button class="side-item ${key === it.key ? 'active' : ''}" data-open="${it.key}" data-key="${it.key}">
           <span class="av-wrap">${it.av}${it.state !== 'idle' ? `<span class="dot ${it.state}"></span>` : ''}</span>
           <span class="meta">
             <span class="row1"><span class="name">${esc(it.name)}</span><span class="time">${it.last ? stamp(it.last.at) : ''}</span></span>
             <span class="sub">${esc(it.last ? (it.last.author === 'user' ? 'You: ' : '') + it.last.text : it.fallback || 'Say hi')}</span>
           </span>
-        </button>`).join('')
+        </button>`).join('') + (sideQuery ? '' : d.sideOrder ? '<button class="side-reset" data-act="side-recent">↺ Sort by recent activity</button>'
+          : items.length > 1 ? '<div class="side-hint">Tip: drag chats to arrange them</div>' : '')
         : sideQuery ? '<div class="side-empty">No chats match</div>'
         : `<div class="side-empty">No bots yet.<br><button class="link" data-act="market">Browse the Marketplace</button> or <button class="link" data-act="new-bot">make one</button>.</div>`}
     </div>
@@ -271,7 +277,89 @@ function renderSide() {
 }
 
 const _renderSide = renderSide;
-renderSide = function () { _renderSide(); if (sideQuery.length >= 2) searchMessages(); }; // keep message hits after re-renders
+renderSide = function () {
+  if (drag?.started) return; // don't rebuild the list under your finger mid-drag
+  _renderSide(); if (sideQuery.length >= 2) searchMessages(); // keep message hits after re-renders
+};
+
+// ---------- drag to reorder the sidebar ----------
+// Mouse: press and move. Touch: hold for a moment, then drag (a quick swipe still scrolls the list).
+// The order is saved on the server, so it's the same on every device.
+let drag = null; // { item, list, startY, grabDy, ty, started, timer, touch }
+let suppressClickUntil = 0;
+document.addEventListener('click', (e) => { if (Date.now() < suppressClickUntil) { e.stopPropagation(); e.preventDefault(); } }, true);
+function dragBegin(item, y, touch) {
+  if (sideQuery) return; // the list is filtered while searching
+  drag = { item, list: item.parentElement, startY: y, started: false, touch };
+  if (touch) drag.timer = setTimeout(() => dragStart(y), 320);
+}
+function dragStart(y) {
+  if (!drag) return;
+  drag.started = true;
+  const r = drag.item.getBoundingClientRect();
+  drag.grabDy = y - r.top;
+  drag.item.classList.add('dragging');
+  document.body.classList.add('reordering');
+  buzz(12);
+}
+function dragMove(y) {
+  if (!drag) return;
+  if (!drag.started) {
+    if (Math.abs(y - drag.startY) < 6) return;
+    if (drag.touch) { clearTimeout(drag.timer); drag = null; return; } // moved before the hold: it's a scroll
+    dragStart(drag.startY);
+  }
+  const { item, list } = drag;
+  // Follow the pointer, then swap with a neighbour once the pointer passes its middle.
+  const siblings = [...list.querySelectorAll('.side-item:not(.dragging)')];
+  const target = siblings.find((el) => { const r = el.getBoundingClientRect(); return y < r.top + r.height / 2; });
+  const before = siblings.map((el) => [el, el.getBoundingClientRect().top]);
+  const next = item.nextElementSibling?.classList.contains('side-item') ? item.nextElementSibling : null;
+  if ((target || null) !== next) {
+    list.insertBefore(item, target || siblings.at(-1)?.nextSibling || null);
+    // Slide the others into their new places (FLIP).
+    for (const [el, top] of before) {
+      const dy = top - el.getBoundingClientRect().top;
+      if (dy) el.animate([{ transform: `translateY(${dy}px)` }, { transform: 'none' }], { duration: 160, easing: 'cubic-bezier(.22,1,.36,1)' });
+    }
+  }
+  const natural = item.getBoundingClientRect().top - (drag.ty || 0); // where it sits without the offset
+  drag.ty = y - drag.grabDy - natural;
+  item.style.transform = `translateY(${drag.ty}px) scale(1.03)`;
+  // Scroll the list when dragging near its edges.
+  const lr = list.getBoundingClientRect();
+  if (y < lr.top + 40) list.scrollTop -= 8; else if (y > lr.bottom - 40) list.scrollTop += 8;
+}
+async function dragEnd() {
+  if (!drag) return;
+  clearTimeout(drag.timer);
+  const was = drag; drag = null;
+  if (!was.started) return;
+  was.item.classList.remove('dragging'); was.item.style.transform = '';
+  document.body.classList.remove('reordering');
+  suppressClickUntil = Date.now() + 400; // the click that follows a drag shouldn't open the chat
+  const order = [...was.list.querySelectorAll('.side-item')].map((el) => el.dataset.key);
+  S.data.sideOrder = order;
+  renderSide();
+  try { await api('/api/side-order', { method: 'PUT', body: { order } }); } catch (err) { toast(err.message); }
+}
+document.addEventListener('pointerdown', (e) => {
+  if (e.pointerType !== 'mouse' || e.button !== 0) return;
+  const item = e.target.closest('.side-list .side-item'); if (item) dragBegin(item, e.clientY, false);
+});
+document.addEventListener('pointermove', (e) => { if (e.pointerType === 'mouse' && drag) { dragMove(e.clientY); if (drag?.started) e.preventDefault(); } });
+document.addEventListener('pointerup', (e) => { if (e.pointerType === 'mouse') dragEnd(); });
+document.addEventListener('touchstart', (e) => {
+  const item = e.target.closest('.side-list .side-item'); if (item && e.touches.length === 1) dragBegin(item, e.touches[0].clientY, true);
+}, { passive: true });
+document.addEventListener('touchmove', (e) => {
+  if (!drag) return;
+  dragMove(e.touches[0].clientY);
+  if (drag?.started) e.preventDefault(); // holding a chat: move it instead of scrolling
+}, { passive: false });
+document.addEventListener('touchend', dragEnd);
+document.addEventListener('touchcancel', dragEnd);
+document.addEventListener('contextmenu', (e) => { if (drag?.touch) e.preventDefault(); }); // no long-press menu while holding
 
 // ---------- activity drawer ----------
 function renderAside() {
@@ -486,6 +574,38 @@ function renderFiles(m) {
     : `<a class="file-chip" href="${fileUrl(f)}" target="_blank" rel="noopener">${ICON.clip}<span>${esc(f.name)}</span><small>${fmtSize(f.size)}</small></a>`).join('')}</div>`;
 }
 function fmtSize(n) { return n < 1024 ? n + ' B' : n < 1048576 ? Math.round(n / 1024) + ' KB' : (n / 1048576).toFixed(1) + ' MB'; }
+
+// ---------- right-click (or long-press) a message: redact ----------
+document.addEventListener('contextmenu', (e) => {
+  const msg = e.target.closest('#thread .msg[data-mid], #thread .note[data-mid]');
+  if (!msg || drag) return;
+  const bubble = msg.querySelector('.bubble, .approval, .trace') || msg;
+  const sel = String(getSelection() || '').trim();
+  const inside = sel && getSelection().anchorNode && bubble.contains(getSelection().anchorNode);
+  e.preventDefault();
+  closePopover();
+  const id = Number(msg.dataset.mid);
+  const el = document.createElement('div');
+  el.className = 'popover';
+  el.innerHTML = `${inside ? `<button data-redact-sel>${ICON.lock}<span>Redact “${esc(sel.length > 24 ? sel.slice(0, 24) + '…' : sel)}”</span></button>` : ''}
+    <button data-redact-all>${ICON.lock}<span>Redact whole message</span></button>
+    <button data-copy-msg>${ICON.check}<span>Copy</span></button>`;
+  document.body.append(el);
+  el.style.left = Math.max(8, Math.min(e.clientX, innerWidth - el.offsetWidth - 8)) + 'px';
+  el.style.top = Math.max(8, Math.min(e.clientY, innerHeight - el.offsetHeight - 8)) + 'px';
+  el.addEventListener('click', async (ev) => {
+    const b = ev.target.closest('button'); if (!b) return;
+    closePopover();
+    const m = S.messages.find((x) => x.id === id);
+    if (b.dataset.copyMsg !== undefined) { await navigator.clipboard?.writeText(m?.body || '').catch(() => {}); return toast('Copied'); }
+    const text = b.dataset.redactSel !== undefined ? sel : '';
+    if (!confirm(text ? `Replace “${text.slice(0, 80)}” with [REDACTED] everywhere Nimbus stored it?` : 'Replace this whole message with [REDACTED]? It’s also removed from saved prompts and bot transcripts.')) return;
+    try {
+      const r = await api(`/api/messages/${id}/redact`, { method: 'POST', body: { text } });
+      buzz(10); toast(`Redacted${r.transcripts ? ` (also in ${r.transcripts} transcript${r.transcripts > 1 ? 's' : ''})` : ''}`);
+    } catch (err) { toast(err.message); }
+  });
+});
 
 // ---------- read aloud ----------
 // Plays a bot reply spoken by Piper on the server. Tapping again (or another reply) stops it.
@@ -1469,6 +1589,7 @@ document.addEventListener('click', async (e) => {
     case 'app-server': return window.NimbusApp?.changeServer();
     case 'computer': return computerModal(cur);
     case 'reset': await api(`/api/bots/${cur.id}/reset`, { method: 'POST' }); return;
+    case 'side-recent': S.data.sideOrder = null; renderSide(); return api('/api/side-order', { method: 'PUT', body: { order: null } });
     case 'menu': e.stopPropagation(); return $('#side').classList.toggle('open');
     case 'panel': e.stopPropagation(); $('#side').classList.remove('open'); return $('#aside').classList.toggle('open');
     case 'logout': await api('/api/logout', { method: 'POST' }); location.href = '/login'; return;

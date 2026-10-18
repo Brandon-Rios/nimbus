@@ -110,7 +110,8 @@ function state(req) {
   for (const r of q('SELECT * FROM bot_plugins').all()) (botPlugins[r.bot_id] ||= []).push(r.plugin_id);
   for (const b of bots) b.plugins = botPlugins[b.id] || [];
   const installed = q('SELECT id FROM plugins').all().map((r) => r.id);
-  return { bots, rooms, approvals, routines, upNext, learned, last, installed, user: req?.user || null, computers: computersOn(), proxmox: !!pveConfig(), usage: { windowCost, budget: WINDOW_BUDGET, running, byBot } };
+  const sideOrder = JSON.parse(getSetting('side_order') || 'null'); // custom sidebar order, or null = most recent first
+  return { sideOrder, bots, rooms, approvals, routines, upNext, learned, last, installed, user: req?.user || null, computers: computersOn(), proxmox: !!pveConfig(), usage: { windowCost, budget: WINDOW_BUDGET, running, byBot } };
 }
 
 function postToThread(thread, text, files = []) {
@@ -463,6 +464,55 @@ route('POST', '/api/approvals/:id', async (req, res, p) => {
   markTraceWaiting(a.run_id, a.tool, false);
   notifyApproval(a.id);
   broadcast('approvals_changed', {});
+  json(res, 200, { ok: true });
+});
+
+// Redact a message, or just a selected part of it. The text is replaced with [REDACTED] in the chat,
+// and the same text is scrubbed from saved prompts, approval requests, other messages and the bots'
+// Claude Code transcripts (~/.claude/projects), so it isn't kept anywhere on this server.
+route('POST', '/api/messages/:id/redact', async (req, res, p) => {
+  const m = q('SELECT * FROM messages WHERE id=?').get(Number(p.id));
+  if (!m) return json(res, 404, { error: 'not found' });
+  const { text } = await body(req);
+  const secret = String(text || '').trim() || (['text', 'note', 'quiet', 'error'].includes(m.kind) ? m.body.trim() : '');
+  if (secret.length < 3) return json(res, 400, { error: ['text', 'note', 'quiet', 'error'].includes(m.kind) ? 'Select at least 3 characters' : 'Select the text to redact in this card first' });
+  if (!m.body.includes(secret)) return json(res, 400, { error: 'That text isn’t in this message (formatting can differ: select plain text)' });
+  const MASK = '[REDACTED]';
+  const like = '%' + secret.replace(/[\\%_]/g, (c) => '\\' + c) + '%';
+  let changed = 0;
+  for (const row of q(`SELECT id, body FROM messages WHERE body LIKE ? ESCAPE '\\'`).all(like)) {
+    const esc = JSON.stringify(secret).slice(1, -1); // as it appears inside JSON bodies (traces, approvals)
+    const nb = row.body.split(secret).join(MASK).split(esc).join(MASK);
+    if (nb !== row.body) { q('UPDATE messages SET body=? WHERE id=?').run(nb, row.id); broadcast('message_update', q('SELECT * FROM messages WHERE id=?').get(row.id)); changed++; }
+  }
+  for (const [table, col] of [['runs', 'prompt'], ['approvals', 'input']]) {
+    for (const row of q(`SELECT id, ${col} AS v FROM ${table} WHERE ${col} LIKE ? ESCAPE '\\'`).all(like)) {
+      const esc = JSON.stringify(secret).slice(1, -1);
+      q(`UPDATE ${table} SET ${col}=? WHERE id=?`).run(row.v.split(secret).join(MASK).split(esc).join(MASK), row.id);
+    }
+  }
+  let files = 0;
+  const projects = path.join(os.homedir(), '.claude', 'projects');
+  const forms = [secret, JSON.stringify(secret).slice(1, -1)];
+  try {
+    for (const dir of fs.readdirSync(projects).filter((d) => d.includes('nimbus-data-bots-'))) {
+      for (const f of fs.readdirSync(path.join(projects, dir)).filter((f) => f.endsWith('.jsonl'))) {
+        const fp = path.join(projects, dir, f), t = fs.readFileSync(fp, 'utf8');
+        if (!forms.some((x) => t.includes(x))) continue;
+        let nt = t; for (const x of forms) nt = nt.split(x).join(MASK);
+        fs.writeFileSync(fp, nt); files++;
+      }
+    }
+  } catch {}
+  db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); // don't leave the old text in the write-ahead log
+  json(res, 200, { ok: true, messages: changed, transcripts: files });
+});
+
+// Sidebar order the user arranged by dragging (shared by all their devices). null = sort by recent activity.
+route('PUT', '/api/side-order', async (req, res) => {
+  const { order } = await body(req);
+  setSetting('side_order', Array.isArray(order) ? JSON.stringify(order.filter((k) => /^(bot|room):\d+$/.test(k)).slice(0, 500)) : '');
+  broadcast('state_changed', {});
   json(res, 200, { ok: true });
 });
 
