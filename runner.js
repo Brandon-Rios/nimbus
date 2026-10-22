@@ -324,7 +324,14 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet }) {
               traceBody.lastThought = block.text.trim().slice(0, 300);
             }
           }
-        } else if (ev.type === 'user' && Array.isArray(ev.message?.content)) {
+        }
+        // Context in use = what the latest model call read: fresh input plus cached prompt.
+        if (ev.type === 'assistant' && ev.message?.usage) {
+          const u = ev.message.usage;
+          const ctx = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+          if (ctx && ctx !== traceBody.context) { traceBody.context = ctx; updateMessage(traceMsg.id, traceBody); }
+        }
+        if (ev.type === 'user' && Array.isArray(ev.message?.content)) {
           for (const block of ev.message.content) {
             if (block.type === 'tool_result' && toolsById.has(block.tool_use_id)) {
               const step = toolsById.get(block.tool_use_id);
@@ -337,6 +344,11 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet }) {
           finalText = ev.result ?? '';
           isError = !!ev.is_error;
           cost = ev.total_cost_usd || 0;
+          const u = ev.usage || {};
+          traceBody.tokens = { in: (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0), out: u.output_tokens || 0 };
+          const mu = Object.values(ev.modelUsage || {});
+          const win = Math.max(0, ...mu.map((m) => m.contextWindow || 0));
+          if (win) traceBody.contextWindow = win;
         }
       }
     });

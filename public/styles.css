@@ -479,3 +479,4 @@ body.reordering, body.reordering * { user-select: none; -webkit-user-select: non
 .pop-hint { font-size: 11.5px; color: var(--faint); padding: 6px 10px 4px; border-top: 1px solid var(--line); margin-top: 4px; }
 /* Native dropdowns elsewhere follow the theme too */
 select option { background: var(--panel); color: var(--text); }
+.trace .sp .ctx.warm { color: var(--warn); } .trace .sp .ctx.hot { color: var(--bad); }

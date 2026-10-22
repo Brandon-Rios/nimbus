@@ -760,6 +760,20 @@ const workPhrase = (started) => WORK_PHRASES[Math.floor(elapsedMs(started) / PHR
 const fmtDur = (secs) => (secs >= 60 ? `${Math.floor(secs / 60)}m ${String(secs % 60).padStart(2, '0')}s` : `${secs}s`);
 const LOADER = '<span class="loader" aria-hidden="true"><i></i><i></i><i></i></span>';
 
+// Run stats instead of a dollar figure: tokens used, how full the context is, and plan usage left.
+const fmtTok = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n));
+function traceStats(t) {
+  const bits = [];
+  if (t.tokens) bits.push(`<span title="Tokens read / written this run (including cached context)">${fmtTok(t.tokens.in)} in · ${fmtTok(t.tokens.out)} out</span>`);
+  if (t.context) {
+    const win = t.contextWindow || 200000, pc = Math.min(100, Math.round((t.context / win) * 100));
+    bits.push(`<span class="ctx ${pc >= 80 ? 'hot' : pc >= 60 ? 'warm' : ''}" title="Context in use: ${t.context.toLocaleString()} of ${win.toLocaleString()} tokens. Near full, start a New chat (memory is kept).">ctx ${pc}%</span>`);
+  }
+  const five = planLast?.ok && planLast.windows.find((w) => w.label === '5-hour limit');
+  if (five && t.status !== 'running') bits.push(`<span title="Claude plan: 5-hour limit left right now">${Math.max(0, Math.round(100 - five.used))}% left</span>`);
+  return bits.length ? ' · ' + bits.join(' · ') : '';
+}
+
 function renderTrace(m, prev) {
   const t = JSON.parse(m.body);
   const running = t.status === 'running';
@@ -772,7 +786,7 @@ function renderTrace(m, prev) {
     t.status === 'done' ? `${t.steps.length} step${t.steps.length === 1 ? '' : 's'}` : t.status === 'stopped' ? 'Stopped' : t.status === 'interrupted' ? 'Interrupted' : 'Run failed';
   const open = running || openTraces.has(m.id);
   return `<div class="msg bot" data-mid="${m.id}">${speakerLabel(m, prev)}<details class="trace ${running ? 'live' : ''} ${waiting ? 'paused' : ''}" ${open ? 'open' : ''} data-started="${t.started}">
-    <summary>${running ? LOADER : ICON.chevron}<span>${label}</span><span class="sp"><span data-dur>${dur}</span>${t.cost ? ` · $${t.cost.toFixed(2)}` : ''}</span>${running ? `<button class="stop" data-stop="${m.run_id}">Stop</button>` : ''}</summary>
+    <summary>${running ? LOADER : ICON.chevron}<span>${label}</span><span class="sp"><span data-dur>${dur}</span>${traceStats(t)}</span>${running ? `<button class="stop" data-stop="${m.run_id}">Stop</button>` : ''}</summary>
     <div class="steps">
       ${t.steps.map((s) => `<div class="step"><span class="mark ${s.state}">${mark[s.state] ?? ''}</span><span>${esc(s.text)}</span></div>`).join('')}
       ${running && t.lastThought ? `<div class="thought">${esc(t.lastThought)}</div>` : ''}
