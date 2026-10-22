@@ -508,7 +508,7 @@ function renderMain() {
       <div class="actions">
         ${isBot ? `
           <label class="effort" title="Effort: higher is smarter but uses more of your plan">
-            <select data-effort-select aria-label="Effort">${EFFORTS.map(([v, l]) => `<option value="${v}" ${b.effort === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+            <button class="effort-btn" data-act="effort-menu" aria-label="Effort" aria-haspopup="menu">${esc(EFFORTS.find(([v]) => v === b.effort)?.[1] || 'Medium')}<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m6 9 6 6 6-6"/></svg></button>
           </label>
           <button class="icon-btn" data-act="routines" title="Routines" aria-label="Routines">${ICON.clock}${nRoutines ? `<i class="count">${nRoutines}</i>` : ''}</button>
           ${b.computer && S.data.computers ? `<button class="icon-btn" data-act="computer" title="${esc(b.name)}’s computer" aria-label="Computer">${ICON.monitor}</button>` : ''}
@@ -1590,6 +1590,24 @@ document.addEventListener('click', async (e) => {
     case 'computer': return computerModal(cur);
     case 'reset': await api(`/api/bots/${cur.id}/reset`, { method: 'POST' }); return;
     case 'side-recent': S.data.sideOrder = null; renderSide(); return api('/api/side-order', { method: 'PUT', body: { order: null } });
+    case 'effort-menu': {
+      e.stopPropagation(); closePopover();
+      const r = t.getBoundingClientRect(), el = document.createElement('div');
+      el.className = 'popover effort-pop';
+      el.innerHTML = EFFORTS.map(([v, l]) => `<button data-effort="${v}" aria-pressed="${cur.effort === v}">${cur.effort === v ? ICON.check : '<i></i>'}<span>${l}</span></button>`).join('')
+        + '<div class="pop-hint">Lower effort uses less of your plan.</div>';
+      document.body.append(el);
+      el.style.top = r.bottom + 6 + 'px';
+      el.style.left = Math.max(8, Math.min(r.right - el.offsetWidth, innerWidth - el.offsetWidth - 8)) + 'px';
+      el.addEventListener('click', async (ev) => {
+        const o = ev.target.closest('[data-effort]'); if (!o) return;
+        closePopover(); buzz(8);
+        await api(`/api/bots/${cur.id}`, { method: 'PATCH', body: { effort: o.dataset.effort } });
+        await refreshState(); renderMain();
+        toast(`${cur.name} will use ${o.textContent.trim().toLowerCase()} effort from the next task`);
+      });
+      return;
+    }
     case 'menu': e.stopPropagation(); return $('#side').classList.toggle('open');
     case 'panel': e.stopPropagation(); $('#side').classList.remove('open'); return $('#aside').classList.toggle('open');
     case 'logout': await api('/api/logout', { method: 'POST' }); location.href = '/login'; return;

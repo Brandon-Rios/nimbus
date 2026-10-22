@@ -161,6 +161,12 @@ For Gmail, Calendar, GitHub, Slack and so on, add MCP servers to Claude Code on 
 To give one bot a code repo, put the path in its instructions ("Work in /home/me/myapp"),
 or clone the repo inside its folder.
 
+## Privacy
+
+- Whether your conversations may be used to train Claude is an **account setting**: claude.ai → Settings →
+  Privacy → **Help improve Claude**. Turn it off there; it covers Claude Code (and so every Nimbus bot) for that account.
+- Nimbus also starts every bot with Claude Code's telemetry, error reporting and feedback surveys turned off.
+
 ## Security notes
 
 - Bots can run any command as the Nimbus user. Run Nimbus as a dedicated user that only has

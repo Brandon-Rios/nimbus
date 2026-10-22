@@ -33,6 +33,10 @@ function findClaude() {
   } catch {}
   return 'claude';
 }
+// Opt every bot run out of Claude Code's usage telemetry, error reporting and feedback surveys.
+// (Whether chats may be used for model training is an account setting at claude.ai, not something
+// Claude Code controls; see README → Privacy.)
+const PRIVACY_ENV = { DISABLE_TELEMETRY: '1', DISABLE_ERROR_REPORTING: '1', CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY: '1' };
 const RUN_TIMEOUT_MS = Number(process.env.NIMBUS_RUN_TIMEOUT_MIN || 45) * 60_000;
 const MAX_HANDOFF_DEPTH = 4;
 // Bots with their own computer run inside a container on the Nimbus computer VM (deploy/computer).
@@ -272,10 +276,10 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet }) {
     let stderr = '';
     const hookEnv = { NIMBUS_RUN_ID: String(runId), NIMBUS_HOOK_TOKEN: HOOK_TOKEN };
     const child = remote
-      ? remoteRun(bot, cwd, runId, args, fullPrompt, { ...hookEnv, NIMBUS_URL: agentConfig().callback })
+      ? remoteRun(bot, cwd, runId, args, fullPrompt, { ...PRIVACY_ENV, ...hookEnv, NIMBUS_URL: agentConfig().callback })
       : spawn(CLAUDE_BIN, args, {
         cwd,
-        env: { ...process.env, ...hookEnv, NIMBUS_URL: `http://127.0.0.1:${process.env.PORT || 8787}` },
+        env: { ...process.env, ...PRIVACY_ENV, ...hookEnv, NIMBUS_URL: `http://127.0.0.1:${process.env.PORT || 8787}` },
         stdio: ['pipe', 'pipe', 'pipe']
       });
     procs.set(runId, child);
