@@ -23,7 +23,7 @@ In the Proxmox host shell, paste:
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Brandon-Rios/nimbus/main/proxmox/nimbus-lxc.sh)"
 ```
-It asks a few questions (container ID, size, network, who may sign in), creates a Debian 12 LXC container,
+It asks a few questions (container ID, size, network, who may sign in), creates a Debian 13 LXC container (Debian 12 on older Proxmox),
 installs Nimbus in it as a dedicated `nimbus` user with a service that starts on boot, and prints the address.
 Then sign the bots in to Claude once: `pct enter <id>`, `su - nimbus -c claude`, `systemctl restart nimbus`.
 

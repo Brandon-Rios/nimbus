@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Nimbus on Proxmox VE: creates a Debian 12 LXC container and installs Nimbus in it.
+# Nimbus on Proxmox VE: creates a Debian 13 (trixie) LXC container and installs Nimbus in it.
 # Run on the Proxmox host shell (as root):
 #   bash -c "$(curl -fsSL https://raw.githubusercontent.com/Brandon-Rios/nimbus/main/proxmox/nimbus-lxc.sh)"
 # Non-interactive: set any of these first, then add --yes:
@@ -56,11 +56,14 @@ pct status "$CTID" >/dev/null 2>&1 && die "Container $CTID already exists."
 [ -n "$STORAGE" ] || die "No storage for containers found."
 
 # ---------- template ----------
-msg "1/5  Debian 12 template"
+msg "1/5  Debian template"
 TSTORE=$(pick_storage vztmpl); [ -n "$TSTORE" ] || die "No storage that holds container templates (enable 'Container template' on one, e.g. local)."
 run pveam update >/dev/null || true
-TPL=$(pveam available --section system 2>/dev/null | awk '/debian-12-standard/ {print $2}' | sort -V | tail -1)
-[ -n "$TPL" ] || die "Couldn't find the Debian 12 template."
+# Newest Debian first: 13 (trixie, Proxmox VE 9+), falling back to 12 on older Proxmox.
+TPL=""
+for v in 13 12; do TPL=$(pveam available --section system 2>/dev/null | awk -v v="debian-$v-standard" '$2 ~ v {print $2}' | sort -V | tail -1); [ -n "$TPL" ] && break; done
+[ -n "$TPL" ] || die "Couldn't find a Debian 12 or 13 template (pveam available --section system)."
+case "$TPL" in debian-12*) warn "Using Debian 12: this Proxmox doesn't offer Debian 13 yet (upgrade to Proxmox VE 9 for it).";; esac
 if pveam list "$TSTORE" | grep -q "$TPL"; then ok "$TPL already on $TSTORE"; else run pveam download "$TSTORE" "$TPL" >/dev/null && ok "Downloaded $TPL"; fi
 
 # ---------- container ----------
