@@ -272,7 +272,7 @@ function renderSide() {
     <div class="side-foot">
       ${pending ? `<button class="foot-item" data-act="panel">${ICON.bell}<span>Approvals</span><span class="badge">${pending}</span></button>` : ''}
       <button class="foot-item" data-act="market">${ICON.grid}<span>Marketplace</span></button>
-      <button class="foot-item user" data-act="user-menu"><span class="initial">${esc(userName()[0])}</span><span>${esc(userName())}</span>${ICON.dots}</button>
+      <button class="foot-item user" data-act="user-menu"><span class="initial">${esc(userName()[0])}</span><span>${esc(userName())}</span></button>
     </div>`;
 }
 
