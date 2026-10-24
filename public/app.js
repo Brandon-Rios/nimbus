@@ -1180,11 +1180,7 @@ async function marketModal(focus = '') {
     const match = (p) => !query || `${p.name} ${p.role || ''} ${p.desc || ''} ${p.category}`.toLowerCase().includes(query);
     const T = S.market.templates.filter(match), P = S.market.plugins.filter(match);
     const cats = (list) => [...new Set(list.map((x) => x.category))];
-    const featured = T.filter((t) => t.featured);
-    $('#mk-body', el).innerHTML = (query ? '' : `
-      <section><h3>Featured Bots</h3><div class="featured">${featured.map((t) => `
-        <button class="f-card" data-add-bot="${t.id}">${avatar(t, 64)}<b style="color:${esc(t.color)}">${esc(t.name)}</b><span>${esc(t.role)}</span><em>${t.added ? 'Added · add again' : 'Add'}</em></button>`).join('')}</div></section>`)
-      + cats(T).map((c) => section(`${c} Bots`, T.filter((t) => t.category === c && (query || !t.featured)), 'bot')).join('')
+    $('#mk-body', el).innerHTML = cats(T).map((c) => section(`${c} Bots`, T.filter((t) => t.category === c), 'bot')).join('')
       + section('Featured Plugins', P.filter((p) => p.category === 'Featured'), 'plugin')
       + cats(P).filter((c) => c !== 'Featured').map((c) => section(c, P.filter((p) => p.category === c), 'plugin')).join('')
       + (!T.length && !P.length ? '<div class="empty small">Nothing matches that search.</div>' : '');
