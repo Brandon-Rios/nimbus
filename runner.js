@@ -423,7 +423,7 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet }) {
 
       // Auto-compact: when this chat's context passes the threshold, compact it now (between messages),
       // so the next reply is fast and nothing earlier gets cut off. Setting: Server settings → Auto-compact.
-      const pct = Number(getSetting('auto_compact_pct', 'NIMBUS_AUTO_COMPACT_PCT') || 75);
+      const pctRaw = String(getSetting('auto_compact_pct', 'NIMBUS_AUTO_COMPACT_PCT') ?? '').trim(), pct = pctRaw === '' ? 20 : Number(pctRaw);
       const win = traceBody.contextWindow || 200000;
       if (pct > 0 && !isRoom && !stopped && sessionId && source !== 'schedule' && traceBody.context && traceBody.context / win * 100 >= pct
           && !q("SELECT 1 FROM runs WHERE bot_id=? AND thread=? AND status='queued'").get(botId, thread)) {

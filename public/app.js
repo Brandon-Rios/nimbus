@@ -1372,7 +1372,7 @@ async function serverModal() {
     <label class="field">Token secret<input id="s-pve_token_secret" ${secret('pve_token_secret')}></label>
     <div class="update-box"><button class="btn small" data-update>Update computers</button><span class="muted" id="upd-status">Rebuilds them with the latest Claude Code and Chromium. Files, browsers and sign-ins are kept; computers restart.</span></div>
     <h3>Chats</h3>
-    <label class="field">Auto-compact at (% of context)<input id="s-auto_compact_pct" type="number" min="0" max="95" value="${esc(v.auto_compact_pct || '75')}"><span class="hint">When a chat’s context passes this, Nimbus compacts it between messages. 0 turns it off. You can also type <code>/compact</code> in any chat.</span></label>
+    <label class="field">Auto-compact at (% of context)<input id="s-auto_compact_pct" type="number" min="0" max="95" value="${esc(v.auto_compact_pct || '20')}"><span class="hint">When a chat’s context passes this, Nimbus compacts it between messages. 0 turns it off. You can also type <code>/compact</code> in any chat.</span></label>
     <h3>Backups</h3>
     <p class="muted">Every night at 3:15 Nimbus saves an encrypted copy of all bots, chats, memories and settings (last 14 kept on this server).
       Set a target to also copy each backup to another machine. Keep the key file <code>~/opt/nimbus-backup.key</code> somewhere safe: backups can’t be opened without it.</p>
