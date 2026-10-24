@@ -252,6 +252,20 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet }) {
       ? q('SELECT session_id FROM sessions WHERE bot_id=? AND thread=?').get(botId, thread)?.session_id
       : null;
 
+    // "/compact": ask Claude Code to summarize this chat's history so it takes far less room (memory and
+    // the gist are kept). Only chats with a running conversation have something to compact.
+    const compacting = /^\/compact\b/i.test(prompt.trim());
+    if (compacting) {
+      if (isRoom || !session) {
+        q("UPDATE runs SET status='done', started_at=unixepoch(), ended_at=unixepoch() WHERE id=?").run(runId);
+        addMessage(thread, 'system', 'note', isRoom ? 'Compacting works in one-to-one chats, not group chats.' : 'Nothing to compact yet: this chat has no conversation history.');
+        const stillQueued = q("SELECT COUNT(*) AS n FROM runs WHERE bot_id=? AND status='queued'").get(botId).n;
+        setStatus(botId, stillQueued ? 'queued' : 'idle', stillQueued ? 'Queued' : 'Idle');
+        return resolve();
+      }
+      fullPrompt = prompt.trim();
+    }
+
     const remote = computersOn() && !!bot.computer;
     const hookPath = remote ? '/opt/nimbus/approval-hook.js' : HOOK;
     const settings = {
@@ -269,7 +283,7 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet }) {
     q("UPDATE runs SET status='running', started_at=unixepoch(), effort=? WHERE id=?").run(bot.effort, runId);
     setStatus(botId, 'working', isRoom ? 'Working in a group chat' : 'Working…');
 
-    const traceBody = { steps: [], status: 'running', effort: bot.effort, started: Date.now(), source };
+    const traceBody = { steps: [], status: 'running', effort: bot.effort, started: Date.now(), source, compacting };
     const traceMsg = addMessage(thread, botId, 'trace', traceBody, runId);
     liveTraces.set(runId, { msgId: traceMsg.id, body: traceBody });
 
@@ -302,7 +316,7 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet }) {
       if (Date.now() - clock.start - clock.waited - waiting > RUN_TIMEOUT_MS) child.kill('SIGTERM');
     }, 15_000);
     const toolsById = new Map();
-    let buf = '', finalText = null, isError = false, cost = 0, sessionId = null;
+    let buf = '', finalText = null, isError = false, cost = 0, sessionId = null, compacted = null;
 
     child.stdout.on('data', (chunk) => {
       buf += chunk;
@@ -313,6 +327,13 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet }) {
         if (!line) continue;
         let ev; try { ev = JSON.parse(line); } catch { continue; }
         if (ev.session_id) sessionId = ev.session_id;
+        // Claude Code compacted the history (asked with /compact, or on its own near the limit).
+        if (ev.type === 'system' && ev.subtype === 'compact_boundary') {
+          const m = ev.compact_metadata || {};
+          compacted = { pre: m.pre_tokens || 0, post: m.post_tokens || 0, trigger: m.trigger || 'auto' };
+          traceBody.context = compacted.post; traceBody.compacted = compacted;
+          updateMessage(traceMsg.id, traceBody);
+        }
         if (ev.type === 'assistant' && ev.message?.content) {
           for (const block of ev.message.content) {
             if (block.type === 'tool_use') {
@@ -373,6 +394,16 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet }) {
       q("UPDATE approvals SET status='expired', decided_at=unixepoch() WHERE run_id=? AND status='pending'").run(runId);
       broadcast('approvals_changed', {});
 
+      const fmtK = (n) => (n >= 1000 ? Math.round(n / 1000) + 'k' : String(n));
+      if (compacting && !stopped) {
+        addMessage(thread, 'system', 'note', compacted
+          ? `🗜 Compacted this chat: ${fmtK(compacted.pre)} → ${fmtK(compacted.post)} tokens. ${bot.name} keeps the gist and its memory.`
+          : `Couldn’t compact this chat${stderr.trim() ? ': ' + stderr.trim().split('\n').pop() : '.'}`);
+        const stillQueued = q("SELECT COUNT(*) AS n FROM runs WHERE bot_id=? AND status='queued'").get(botId).n;
+        setStatus(botId, stillQueued ? 'queued' : 'idle', stillQueued ? 'Queued' : 'Idle');
+        return resolve();
+      }
+      if (compacted && !compacting) addMessage(thread, 'system', 'note', `🗜 The chat was getting long, so Claude compacted it (${fmtK(compacted.pre)} → ${fmtK(compacted.post)} tokens).`);
       let reply = finalText;
       if (stopped) reply = reply || 'Stopped.';
       else if (reply == null || (code !== 0 && !reply)) {
@@ -383,6 +414,16 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet }) {
       const msg = allClear
         ? addMessage(thread, botId, 'quiet', reply.replace(/^\s*ALL_CLEAR\b[\s:—-]*/, '').trim() || 'All clear', runId)
         : addMessage(thread, botId, isError || (code !== 0 && !stopped) ? 'error' : 'text', reply, runId);
+
+      // Auto-compact: when this chat's context passes the threshold, compact it now (between messages),
+      // so the next reply is fast and nothing earlier gets cut off. Setting: Server settings → Auto-compact.
+      const pct = Number(getSetting('auto_compact_pct', 'NIMBUS_AUTO_COMPACT_PCT') || 75);
+      const win = traceBody.contextWindow || 200000;
+      if (pct > 0 && !isRoom && !stopped && sessionId && source !== 'schedule' && traceBody.context && traceBody.context / win * 100 >= pct
+          && !q("SELECT 1 FROM runs WHERE bot_id=? AND thread=? AND status='queued'").get(botId, thread)) {
+        addMessage(thread, 'system', 'note', `Context is ${Math.round(traceBody.context / win * 100)}% full, so Nimbus is compacting this chat.`);
+        runBot({ botId, thread, prompt: '/compact', source: 'auto-compact' });
+      }
 
       const stillQueued = q("SELECT COUNT(*) AS n FROM runs WHERE bot_id=? AND status='queued'").get(botId).n;
       setStatus(botId, stillQueued ? 'queued' : 'idle', stillQueued ? 'Queued' : 'Idle');

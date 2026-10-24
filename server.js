@@ -521,7 +521,7 @@ route('PUT', '/api/side-order', async (req, res) => {
 const SETTINGS = [
   { key: 'agent_url', env: 'NIMBUS_AGENT_URL' }, { key: 'agent_token', env: 'NIMBUS_AGENT_TOKEN', secret: true }, { key: 'callback_url', env: 'NIMBUS_CALLBACK_URL' },
   { key: 'pve_host' }, { key: 'pve_token_id' }, { key: 'pve_token_secret', secret: true },
-  { key: 'backup_target' }
+  { key: 'backup_target' }, { key: 'auto_compact_pct', env: 'NIMBUS_AUTO_COMPACT_PCT' }
 ];
 route('GET', '/api/settings', (req, res) => {
   const out = {};
@@ -533,6 +533,7 @@ route('PUT', '/api/settings', async (req, res) => {
   for (const s of SETTINGS) {
     if (b[s.key] === undefined || (s.secret && b[s.key] === '__saved__')) continue;
     const v = String(b[s.key]).trim();
+    if (s.key === 'auto_compact_pct' && v && !(Number(v) >= 0 && Number(v) <= 95)) return json(res, 400, { error: 'Auto-compact must be 0 (off) to 95' });
     if (s.key === 'backup_target' && v && !/^[\w.-]+@[\w.-]+:\/[^\s]*$/.test(v)) return json(res, 400, { error: 'Backup target should look like user@host:/path' });
     if (/_url$/.test(s.key) && v && !/^https?:\/\/[^\s]+$/.test(v)) return json(res, 400, { error: `${s.key.replace('_', ' ')} must start with http:// or https://` });
     setSetting(s.key, v);

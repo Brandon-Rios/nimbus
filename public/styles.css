@@ -480,3 +480,7 @@ body.reordering, body.reordering * { user-select: none; -webkit-user-select: non
 /* Native dropdowns elsewhere follow the theme too */
 select option { background: var(--panel); color: var(--text); }
 .trace .sp .ctx.warm { color: var(--warn); } .trace .sp .ctx.hot { color: var(--bad); }
+.slash-hint { max-width: 760px; margin: 0 auto 6px; display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--line-strong); border-radius: 12px; padding: 4px; animation: pop-in .18s var(--spring, ease) both; }
+.slash-hint button { display: flex; gap: 10px; align-items: baseline; text-align: left; padding: 7px 10px; border-radius: 8px; font-size: 13px; }
+.slash-hint button:hover { background: var(--hover); }
+.slash-hint span { color: var(--muted); font-size: 12.5px; }

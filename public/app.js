@@ -607,6 +607,21 @@ document.addEventListener('contextmenu', (e) => {
   });
 });
 
+// ---------- slash commands in the message box ----------
+const SLASH = [['/compact', 'Shrink this chat’s history so it uses less context (memory is kept)'], ['/new', 'Start a fresh chat with this bot (memory is kept)']];
+function slashHint(v) {
+  let box = $('#slash-hint');
+  const show = S.current?.type === 'bot' && /^\/\w*$/.test(v);
+  const items = show ? SLASH.filter(([c]) => c.startsWith(v.toLowerCase())) : [];
+  if (!items.length) return box?.remove();
+  if (!box) { box = document.createElement('div'); box.id = 'slash-hint'; box.className = 'slash-hint'; $('.composer').prepend(box); }
+  box.innerHTML = items.map(([c, d]) => `<button type="button" data-slash="${c}"><b>${c}</b><span>${d}</span></button>`).join('');
+}
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-slash]'); if (!b) return;
+  const ta = $('#msg'); ta.value = b.dataset.slash; $('#slash-hint')?.remove(); $('#composer').requestSubmit();
+});
+
 // ---------- read aloud ----------
 // Plays a bot reply spoken by Piper on the server. Tapping again (or another reply) stops it.
 let speaking = null; // { audio, btn }
@@ -782,7 +797,7 @@ function renderTrace(m, prev) {
   const dur = fmtDur(secs);
   const mark = { done: '✓', waiting: '⏸', error: '✗', rejected: '✗', stopped: '■', running: '' };
   const waiting = running && t.steps.some((s) => s.state === 'waiting');
-  const label = running ? (waiting ? 'Waiting for your approval' : `<span class="shimmer" data-phrase>${workPhrase(t.started)}</span>`) :
+  const label = running ? (waiting ? 'Waiting for your approval' : t.source === 'auto-compact' || t.compacting ? '<span class="shimmer">Compacting the chat…</span>' : `<span class="shimmer" data-phrase>${workPhrase(t.started)}</span>`) :
     t.status === 'done' ? `${t.steps.length} step${t.steps.length === 1 ? '' : 's'}` : t.status === 'stopped' ? 'Stopped' : t.status === 'interrupted' ? 'Interrupted' : 'Run failed';
   const open = running || openTraces.has(m.id);
   return `<div class="msg bot" data-mid="${m.id}">${speakerLabel(m, prev)}<details class="trace ${running ? 'live' : ''} ${waiting ? 'paused' : ''}" ${open ? 'open' : ''} data-started="${t.started}">
@@ -1360,6 +1375,8 @@ async function serverModal() {
     <label class="field">Token ID<input id="s-pve_token_id" value="${esc(v.pve_token_id)}" placeholder="user@pve!tokenname"></label>
     <label class="field">Token secret<input id="s-pve_token_secret" ${secret('pve_token_secret')}></label>
     <div class="update-box"><button class="btn small" data-update>Update computers</button><span class="muted" id="upd-status">Rebuilds them with the latest Claude Code and Chromium. Files, browsers and sign-ins are kept; computers restart.</span></div>
+    <h3>Chats</h3>
+    <label class="field">Auto-compact at (% of context)<input id="s-auto_compact_pct" type="number" min="0" max="95" value="${esc(v.auto_compact_pct || '75')}"><span class="hint">When a chat’s context passes this, Nimbus compacts it between messages. 0 turns it off. You can also type <code>/compact</code> in any chat.</span></label>
     <h3>Backups</h3>
     <p class="muted">Every night at 3:15 Nimbus saves an encrypted copy of all bots, chats, memories and settings (last 14 kept on this server).
       Set a target to also copy each backup to another machine. Keep the key file <code>~/opt/nimbus-backup.key</code> somewhere safe: backups can’t be opened without it.</p>
@@ -1643,7 +1660,7 @@ document.addEventListener('toggle', (e) => {
   if (e.target.matches?.('details.trace')) { const id = Number(e.target.closest('[data-mid]').dataset.mid); e.target.open ? openTraces.add(id) : openTraces.delete(id); }
 }, true);
 document.addEventListener('input', (e) => {
-  if (e.target.id === 'msg') autosize(e.target);
+  if (e.target.id === 'msg') { autosize(e.target); slashHint(e.target.value); }
   if (e.target.id === 'side-search') { sideQuery = e.target.value.trim().toLowerCase(); refreshSideOnly(); }
 });
 let searchSeq = 0, searchTimer;
@@ -1673,6 +1690,7 @@ document.addEventListener('submit', async (e) => {
   if (e.target.id !== 'composer') return;
   e.preventDefault();
   const ta = $('#msg'); const text = ta.value.trim();
+  if (/^\/(new|clear)$/i.test(text)) { ta.value = ''; autosize(ta); await api(`/api/bots/${S.current.id}/reset`, { method: 'POST' }); return; }
   if (attachments.some((a) => !a.id && !a.error)) return toast('Still uploading…');
   const files = attachments.filter((a) => a.id).map((a) => a.id);
   if (!text && !files.length) return;
@@ -1680,7 +1698,7 @@ document.addEventListener('submit', async (e) => {
   const sendBtn = $('.composer .send');
   sendBtn?.classList.remove('launch'); void sendBtn?.offsetWidth; sendBtn?.classList.add('launch');
   buzz(10);
-  ta.value = ''; autosize(ta); sessionDraft.delete(threadKey()); attachments = []; drawAttachments();
+  ta.value = ''; autosize(ta); $('#slash-hint')?.remove(); sessionDraft.delete(threadKey()); attachments = []; drawAttachments();
   try { await api(`/api/threads/${encodeURIComponent(threadKey())}/messages`, { method: 'POST', body: { text, files } }); kept.forEach((a) => a.preview && URL.revokeObjectURL(a.preview)); }
   catch (err) { ta.value = text; attachments = kept; drawAttachments(); toast(err.message); }
 });
