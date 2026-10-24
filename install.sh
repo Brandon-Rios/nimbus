@@ -49,6 +49,7 @@ else
   curl -fsSL https://deb.nodesource.com/setup_22.x | $SUDO -E bash - >/dev/null
   $SUDO apt-get install -y -qq nodejs >/dev/null && ok "Node $(node -v)"
 fi
+export PATH="$HOME/.npm-global/bin:$PATH"
 if have claude; then ok "Claude Code $(claude --version 2>/dev/null | head -1)"
 else
   echo "  Installing Claude Code…"
@@ -58,6 +59,9 @@ else
     export PATH="$HOME/.npm-global/bin:$PATH"
     grep -q '.npm-global/bin' "$HOME/.bashrc" 2>/dev/null || echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> "$HOME/.bashrc"
   fi
+  # npm may have put it in a folder this shell doesn't know yet (e.g. ~/.npm-global/bin).
+  export PATH="$(npm prefix -g 2>/dev/null)/bin:$HOME/.npm-global/bin:$PATH"; hash -r
+  grep -q '.npm-global/bin' "$HOME/.bashrc" 2>/dev/null || echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> "$HOME/.bashrc"
   have claude && ok "Claude Code installed" || die "Claude Code didn't install. Try: npm install -g @anthropic-ai/claude-code"
 fi
 if [ -f "$HOME/.claude/.credentials.json" ]; then ok "Claude Code is logged in"

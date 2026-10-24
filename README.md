@@ -17,6 +17,16 @@ background, and they stop and ask before anything risky.
 
 No npm packages. Needs only **Node 22.13+** and **Claude Code**.
 
+## Proxmox VE (one line)
+
+In the Proxmox host shell, paste:
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/Brandon-Rios/nimbus/main/proxmox/nimbus-lxc.sh)"
+```
+It asks a few questions (container ID, size, network, who may sign in), creates a Debian 12 LXC container,
+installs Nimbus in it as a dedicated `nimbus` user with a service that starts on boot, and prints the address.
+Then sign the bots in to Claude once: `pct enter <id>`, `su - nimbus -c claude`, `systemctl restart nimbus`.
+
 ## Quick install
 
 On a Linux server (Debian/Ubuntu tested), as the user Nimbus should run as:
