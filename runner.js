@@ -284,6 +284,12 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet }) {
     setStatus(botId, 'working', isRoom ? 'Working in a group chat' : 'Working…');
 
     const traceBody = { steps: [], status: 'running', effort: bot.effort, started: Date.now(), source, compacting };
+    // Context window size isn't known until Claude Code finishes; use the last one seen in this chat so the
+    // live "ctx %" is right (a 1M-token model would otherwise show as 100% of a guessed 200k).
+    try {
+      const prevTrace = q("SELECT body FROM messages WHERE thread=? AND kind='trace' AND body LIKE '%contextWindow%' ORDER BY id DESC LIMIT 1").get(thread);
+      if (prevTrace) traceBody.contextWindow = JSON.parse(prevTrace.body).contextWindow;
+    } catch {}
     const traceMsg = addMessage(thread, botId, 'trace', traceBody, runId);
     liveTraces.set(runId, { msgId: traceMsg.id, body: traceBody });
 
