@@ -10,6 +10,7 @@ import os from 'node:os';
 import { redact } from './redact.js';
 import { addClient, broadcast } from './events.js';
 import { execFile, execFileSync, spawn } from 'node:child_process';
+import { claudeEnv, claudeStatus, setClaudeToken, TOKEN_RE } from './claudeauth.js';
 import { CLAUDE_BIN, computersOn, agentConfig, agent, runBot, stopRun, addMessage, updateMessage, botStatus, roomMembers, findMentions, markTraceWaiting, recoverRuns, HOOK_TOKEN, contextReport } from './runner.js';
 import { TEMPLATES, PLUGINS, publicPlugin } from './catalog.js';
 import { startScheduler, nextRun, isValidCron } from './scheduler.js';
@@ -111,7 +112,7 @@ function state(req) {
   for (const b of bots) b.plugins = botPlugins[b.id] || [];
   const installed = q('SELECT id FROM plugins').all().map((r) => r.id);
   const sideOrder = JSON.parse(getSetting('side_order') || 'null'); // custom sidebar order, or null = most recent first
-  return { sideOrder, bots, rooms, approvals, routines, upNext, learned, last, installed, user: req?.user || null, computers: computersOn(), proxmox: !!pveConfig(), usage: { windowCost, budget: WINDOW_BUDGET, running, byBot } };
+  return { sideOrder, bots, rooms, approvals, routines, upNext, learned, last, installed, user: req?.user || null, computers: computersOn(), proxmox: !!pveConfig(), claude: claudeStatus(), usage: { windowCost, budget: WINDOW_BUDGET, running, byBot } };
 }
 
 function postToThread(thread, text, files = []) {
@@ -338,7 +339,7 @@ let connCache = { at: 0, list: [], loading: null };
 function loadConnectors() {
   if (connCache.loading) return connCache.loading;
   connCache.loading = new Promise((resolve) => {
-    execFile(CLAUDE_BIN, ['mcp', 'list'], { timeout: 90_000, cwd: DATA_DIR }, (err, out = '') => {
+    execFile(CLAUDE_BIN, ['mcp', 'list'], { timeout: 90_000, cwd: DATA_DIR, env: { ...process.env, ...claudeEnv() } }, (err, out = '') => {
       const list = [];
       for (const line of String(out).split('\n')) {
         const m = line.match(/^claude\.ai (.+?): .* - (.+)$/);
@@ -523,6 +524,21 @@ route('POST', '/api/messages/:id/redact', async (req, res, p) => {
 route('PUT', '/api/side-order', async (req, res) => {
   const { order } = await body(req);
   setSetting('side_order', Array.isArray(order) ? JSON.stringify(order.filter((k) => /^(bot|room):\d+$/.test(k)).slice(0, 500)) : '');
+  broadcast('state_changed', {});
+  json(res, 200, { ok: true });
+});
+
+// ---------- the Claude account the bots use ----------
+// The token is write-only: the app only learns whether one is saved.
+route('PUT', '/api/claude-account', async (req, res) => {
+  const token = String((await body(req)).token || '').trim();
+  if (!TOKEN_RE.test(token)) return json(res, 400, { error: 'That doesn’t look like a Claude token. Run `claude setup-token` and paste the line that starts with sk-ant-oat.' });
+  setClaudeToken(token);
+  broadcast('state_changed', {});
+  json(res, 200, { ok: true });
+});
+route('DELETE', '/api/claude-account', (req, res) => {
+  setClaudeToken('');
   broadcast('state_changed', {});
   json(res, 200, { ok: true });
 });

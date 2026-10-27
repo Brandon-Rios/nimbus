@@ -530,3 +530,4 @@ select option { background: var(--panel); color: var(--text); }
 .info-line .pi { flex: none; width: 20px; height: 20px; border-radius: 5px; display: grid; place-items: center; font-size: 9px; font-weight: 700; color: #fff; }
 .info-sec .btn.small { margin-top: 8px; }
 .ctx-foot { gap: 8px; justify-content: flex-end; }
+.steps-list { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; line-height: 1.5; }

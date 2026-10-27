@@ -1390,6 +1390,39 @@ function appearanceModal() {
   }
 }
 
+// ---------- the Claude account the bots use ----------
+// Either the server's own Claude Code login, or a token from `claude setup-token` pasted here (stored
+// encrypted; it takes priority). Handy for switching accounts without a terminal on the server.
+function claudeModal() {
+  const c = S.data.claude || { mode: 'none' };
+  const status = c.mode === 'token' ? `✅ Connected with a Claude token${c.at ? ` since ${new Date(c.at * 1000).toLocaleDateString()}` : ''}. All bots use this account.`
+    : c.mode === 'login' ? '✅ Using the server’s own Claude Code login. Paste a token below to use a different account instead.'
+    : '⚠ No Claude account yet. Bots can’t run until you connect one.';
+  const el = modal(`<div class="modal-head"><h2>Claude account</h2><button class="icon-btn" data-close aria-label="Close">${ICON.close}</button></div>
+    <p>${status}</p>
+    <ol class="steps-list">
+      <li>On any computer with Claude Code, open a terminal and run <code>claude setup-token</code>. No Claude Code? <code>npm install -g @anthropic-ai/claude-code</code></li>
+      <li>Sign in with your Claude account (Pro or Max) in the browser window that opens.</li>
+      <li>Copy the line that starts with <code>sk-ant-oat</code> and paste it here.</li>
+    </ol>
+    <label class="field">${c.mode === 'token' ? 'Replace token' : 'Token'}<input id="cl-token" type="password" autocomplete="off" placeholder="sk-ant-oat01-…"></label>
+    <p class="muted small">Stored encrypted on your Nimbus server and never shown again. The token lasts about a year.</p>
+    <div class="modal-foot">${c.mode === 'token' ? '<button class="btn danger left" data-disconnect>Remove token</button>' : ''}<button class="btn" data-close>Cancel</button><button class="btn primary" data-save>${c.mode === 'token' ? 'Replace' : 'Connect'}</button></div>`);
+  el.addEventListener('click', async (e) => {
+    if (e.target.closest('[data-close]')) return closeModal();
+    try {
+      if (e.target.closest('[data-disconnect]')) {
+        if (!confirm('Remove the Claude token? Bots fall back to the server’s own Claude login, if it has one.')) return;
+        await api('/api/claude-account', { method: 'DELETE' }); closeModal(); await refreshState(); renderMain(); return toast('Token removed');
+      }
+      if (e.target.closest('[data-save]')) {
+        await api('/api/claude-account', { method: 'PUT', body: { token: $('#cl-token', el).value } });
+        closeModal(); await refreshState(); renderMain(); buzz(10); toast('Claude account connected');
+      }
+    } catch (err) { toast(err.message); }
+  });
+}
+
 // ---------- activity log ----------
 // Everything bots did lately: each run (who asked, how long, outcome) and each approval decision.
 async function activityLogModal() {
@@ -1664,7 +1697,8 @@ document.addEventListener('click', async (e) => {
   if (act) closePopover();
   switch (act) {
     case 'new-menu': e.stopPropagation(); return popover(t, [['new-bot', 'New bot', ICON.plus], ['new-room', 'New group chat', ICON.compose], ['market', 'Browse Marketplace', ICON.grid]]);
-    case 'user-menu': e.stopPropagation(); return popover(t, [['appearance', 'Appearance', ICON.gear], ['server', 'Server settings', ICON.monitor], ['log', 'Activity log', ICON.clock], ['mfa', 'Two-factor authentication', ICON.lock], ['notify', 'Notifications', ICON.bell], ...(window.NimbusApp ? [['app-server', 'App: server address', ICON.gear]] : []), ['logout', 'Log out', ICON.close]]);
+    case 'claude': return claudeModal();
+    case 'user-menu': e.stopPropagation(); return popover(t, [['appearance', 'Appearance', ICON.gear], ['server', 'Server settings', ICON.monitor], ['log', 'Activity log', ICON.clock], ['claude', S.data.claude?.mode === 'none' ? 'Connect Claude ⚠' : 'Claude account', ICON.plug], ['mfa', 'Two-factor authentication', ICON.lock], ['notify', 'Notifications', ICON.bell], ...(window.NimbusApp ? [['app-server', 'App: server address', ICON.gear]] : []), ['logout', 'Log out', ICON.close]]);
     case 'new-bot': return botModal();
     case 'edit-bot': return botModal(cur);
     case 'new-room': return roomModal();

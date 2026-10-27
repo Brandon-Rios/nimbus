@@ -9,6 +9,7 @@ import { q, parseBot, writeBotBrief, getSetting, ASK_BOT } from './db.js';
 import { redact } from './redact.js';
 import { broadcast } from './events.js';
 import { PLUGINS } from './catalog.js';
+import { claudeEnv } from './claudeauth.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const HOOK = path.join(HERE, 'hooks', 'approval-hook.js');
@@ -296,10 +297,10 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet }) {
     let stderr = '';
     const hookEnv = { NIMBUS_RUN_ID: String(runId), NIMBUS_HOOK_TOKEN: HOOK_TOKEN };
     const child = remote
-      ? remoteRun(bot, cwd, runId, args, fullPrompt, { ...PRIVACY_ENV, ...hookEnv, NIMBUS_URL: agentConfig().callback })
+      ? remoteRun(bot, cwd, runId, args, fullPrompt, { ...PRIVACY_ENV, ...claudeEnv(), ...hookEnv, NIMBUS_URL: agentConfig().callback })
       : spawn(CLAUDE_BIN, args, {
         cwd,
-        env: { ...process.env, ...PRIVACY_ENV, ...hookEnv, NIMBUS_URL: `http://127.0.0.1:${process.env.PORT || 8787}` },
+        env: { ...process.env, ...PRIVACY_ENV, ...claudeEnv(), ...hookEnv, NIMBUS_URL: `http://127.0.0.1:${process.env.PORT || 8787}` },
         stdio: ['pipe', 'pipe', 'pipe']
       });
     procs.set(runId, child);
@@ -507,7 +508,7 @@ export function contextReport(botId, thread, extraEnv = {}) {
     const mcp = mcpServers(botId, false);
     if (Object.keys(mcp).length) args.push('--mcp-config', JSON.stringify({ mcpServers: mcp }));
     if (bot.model) args.push('--model', bot.model);
-    const child = spawn(CLAUDE_BIN, args, { cwd, env: { ...process.env, ...PRIVACY_ENV, ...extraEnv }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(CLAUDE_BIN, args, { cwd, env: { ...process.env, ...PRIVACY_ENV, ...claudeEnv(), ...extraEnv }, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '', err = '';
     const timer = setTimeout(() => child.kill(), 60_000);
     child.stdout.on('data', (d) => { out += d; });
