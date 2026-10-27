@@ -503,7 +503,7 @@ export function contextReport(botId, thread, extraEnv = {}) {
     const session = q('SELECT session_id FROM sessions WHERE bot_id=? AND thread=?').get(botId, thread)?.session_id;
     if (!session) return reject(new Error('This chat has no conversation yet. Send a message first.'));
     const cwd = writeBotBrief(bot, false);
-    const args = ['-p', '/context', '--resume', session, '--output-format', 'json'];
+    const args = ['-p', '/context', '--resume', session, '--fork-session', '--no-session-persistence', '--output-format', 'json']; // read a throwaway copy: the chat itself is untouched
     const mcp = mcpServers(botId, false);
     if (Object.keys(mcp).length) args.push('--mcp-config', JSON.stringify({ mcpServers: mcp }));
     if (bot.model) args.push('--model', bot.model);
