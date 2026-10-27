@@ -1946,6 +1946,7 @@ document.addEventListener('click', async (e) => {
   if (t.closest('[data-doc-wide]')) return pane.classList.toggle('wide');
   if (t.closest('[data-doc-panel]')) { const p = t.closest('[data-doc-panel]').dataset.docPanel; DOC.panel = DOC.panel === p ? '' : p; return renderDoc(); }
   if (t.closest('[data-doc-export]')) {
+    e.stopImmediatePropagation();
     document.querySelector('.doc-menu')?.remove();
     const m = document.createElement('div');
     m.className = 'popover doc-menu';
@@ -1969,7 +1970,8 @@ document.addEventListener('click', async (e) => {
   if (t.closest('[data-blk-add-end]')) return docNewBlock(null);
   if (!blk || blk.classList.contains('blk-new')) return;
   if (t.closest('[data-blk-add]')) return docNewBlock(blk.dataset.bid);
-  if (t.closest('[data-blk-menu]')) return docBlockMenu(t.closest('[data-blk-menu]'), blk);
+  // stopImmediatePropagation: the general click handler below would close this popover in the same click.
+  if (t.closest('[data-blk-menu]')) { e.stopImmediatePropagation(); return docBlockMenu(t.closest('[data-blk-menu]'), blk); }
   if (t.closest('[data-todo]')) {
     const b = DOC.d.blocks.find((x) => x.id === blk.dataset.bid), n = Number(t.dataset.todo);
     let k = -1;
