@@ -487,7 +487,6 @@ select option { background: var(--panel); color: var(--text); }
 
 /* Context breakdown */
 .trace .sp button.ctx { background: none; border: 0; padding: 0; font: inherit; color: inherit; cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
-.ctx-modal { max-width: 360px; }
 .ctxp { display: flex; flex-direction: column; gap: 12px; font-size: 14px; }
 .ctx-top { display: flex; justify-content: space-between; align-items: baseline; }
 .ctx-top span { color: var(--muted); font-size: 13px; }
@@ -512,3 +511,22 @@ select option { background: var(--panel); color: var(--text); }
 .ctx-item small { color: var(--faint); margin-left: 6px; }
 .ctx-item b { font-weight: 400; color: var(--muted); }
 .ctx-foot { display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--line); padding-top: 12px; color: var(--faint); font-size: 12px; }
+
+/* Chat details panel (right side, like Claude's) */
+.aside.info { gap: 14px; }
+@media (min-width: 1280px) { .aside.info.open { box-shadow: none; } body:has(#info.open) .main { margin-right: min(360px, 92vw); } }
+.info-body { display: flex; flex-direction: column; gap: 12px; }
+.info-sec { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+.info-sec > summary { display: flex; align-items: center; gap: 6px; list-style: none; cursor: pointer; font-weight: 600; font-size: 14px; }
+.info-sec > summary::-webkit-details-marker { display: none; }
+.info-sec > summary svg { color: var(--muted); transition: transform .15s; transform: rotate(-90deg); }
+.info-sec[open] > summary svg { transform: none; }
+.info-sec[open] > summary { margin-bottom: 12px; }
+.info-line { display: flex; align-items: center; gap: 10px; padding: 6px 0; font-size: 14px; min-width: 0; }
+.info-line svg { width: 16px; height: 16px; flex: none; color: var(--muted); }
+.info-line span:not(.pi) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.info-line em { margin-left: auto; font-style: normal; font-size: 12px; color: var(--faint); }
+.info-line em.bad { color: var(--warn); }
+.info-line .pi { flex: none; width: 20px; height: 20px; border-radius: 5px; display: grid; place-items: center; font-size: 9px; font-weight: 700; color: #fff; }
+.info-sec .btn.small { margin-top: 8px; }
+.ctx-foot { gap: 8px; justify-content: flex-end; }

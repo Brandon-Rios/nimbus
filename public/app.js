@@ -24,6 +24,7 @@ const ICON = {
   dots: svg('<circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/>'),
   lock: svg('<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>', 14),
   check: svg('<path d="m5 12 5 5 9-10"/>', 14),
+  sidebar: svg('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>'),
   chevron: svg('<path d="m9 6 6 6-6 6"/>', 14),
   mic: svg('<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>'),
   clip: svg('<path d="m20 11.5-8.3 8.3a5 5 0 0 1-7-7l8.8-8.8a3.3 3.3 0 0 1 4.7 4.7l-8.8 8.8a1.7 1.7 0 0 1-2.4-2.4l8.1-8.1"/>'),
@@ -515,6 +516,7 @@ function renderMain() {
           <button class="icon-btn" data-act="plugins" title="Plugins" aria-label="Plugins">${ICON.plug}${b.plugins.length ? `<i class="count">${b.plugins.length}</i>` : ''}</button>
           <button class="icon-btn" data-act="memory" title="Memory" aria-label="Memory">${ICON.book}</button>
           <button class="icon-btn" data-act="reset" title="New chat (memory is kept)" aria-label="New chat">${ICON.compose}</button>
+          <button class="icon-btn" data-act="info" title="Chat details: environment, context, connectors" aria-label="Chat details">${ICON.sidebar}</button>
           <button class="icon-btn" data-act="edit-bot" title="Settings" aria-label="Settings">${ICON.gear}</button>`
         : `<button class="icon-btn" data-act="edit-room" title="Settings" aria-label="Settings">${ICON.gear}</button>`}
         <button class="icon-btn" data-act="panel" title="Activity" aria-label="Activity">${ICON.bell}${pending ? `<i class="count hot">${pending}</i>` : ''}</button>
@@ -608,7 +610,7 @@ document.addEventListener('contextmenu', (e) => {
 });
 
 // ---------- slash commands in the message box ----------
-const SLASH = [['/context', 'See what’s using this chat’s context'], ['/compact', 'Shrink this chat’s history so it uses less context (memory is kept)'], ['/new', 'Start a fresh chat with this bot (memory is kept)']];
+const SLASH = [['/context', 'Open chat details: what’s using this chat’s context'], ['/compact', 'Shrink this chat’s history so it uses less context (memory is kept)'], ['/new', 'Start a fresh chat with this bot (memory is kept)']];
 function slashHint(v) {
   let box = $('#slash-hint');
   const show = S.current?.type === 'bot' && /^\/\w*$/.test(v);
@@ -839,6 +841,7 @@ async function openThread(key) {
   if (prev) sessionDraft.set(prev, $('#msg')?.value || '');
   S.current = { type, id: Number(id) };
   history.replaceState(null, '', '#' + key);
+  if (infoBot) { if (type === 'bot') { if (infoBot !== Number(id)) { $('#info').innerHTML = ''; openInfo({ id: Number(id) }); } } else closeInfo(); }
   S.loadingThread = true; S.messages = [];
   $('#side').classList.remove('open'); $('#aside').classList.remove('open');
   renderSide(); renderMain();
@@ -885,6 +888,7 @@ function connect() {
     const i = S.messages.findIndex((x) => x.id === m.id);
     if (i < 0) return;
     S.messages[i] = m;
+    if (m.kind === 'trace' && infoBot && m.thread === 'bot:' + infoBot && JSON.parse(m.body || '{}').status !== 'running') setTimeout(loadInfo, 800);
     const el = document.querySelector(`[data-mid="${m.id}"]`);
     if (el) {
       const th = $('#thread');
@@ -965,31 +969,63 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { if (!$('
 // Where this chat's context goes, from Claude Code's own /context report.
 const CTX_COLORS = { 'System prompt': '#9ca3af', 'System tools': '#6366f1', 'System tools (deferred)': '#6b7280', 'MCP tools': '#10b981', 'MCP tools (deferred)': '#6b7280',
   'Memory files': '#a78bfa', 'Skills': '#f59e0b', 'Custom agents': '#ec4899', 'Messages': '#f97316', 'Autocompact buffer': '#4b5563', 'Free space': 'transparent' };
-async function contextModal(b) {
-  const el = modal(`<div class="modal-head"><h2>Context</h2><button class="icon-btn" data-close aria-label="Close">${ICON.close}</button></div>
-    <div class="ctxp"><div class="empty small">${LOADER} Reading ${esc(b.name)}’s context…</div></div>`, { cls: 'ctx-modal' });
-  el.addEventListener('click', async (e) => {
-    if (e.target.closest('[data-close]')) return closeModal();
-    if (e.target.closest('[data-ctx-compact]')) { closeModal(); await api(`/api/threads/${encodeURIComponent('bot:' + b.id)}/messages`, { method: 'POST', body: { text: '/compact' } }); }
-  });
+// Chat details: a side panel like Claude's — where the bot runs, what's using its context, its connectors.
+let infoBot = null, infoBusy = false;
+function openInfo(b) {
+  infoBot = b.id;
+  $('#aside').classList.remove('open');
+  const el = $('#info');
+  el.classList.add('open');
+  loadInfo();
+}
+function closeInfo() { infoBot = null; $('#info').classList.remove('open'); }
+async function loadInfo() {
+  const b = bot(infoBot), el = $('#info');
+  if (!b || infoBusy) return;
+  infoBusy = true;
+  const keep = el.querySelector('.info-body') ? [...el.querySelectorAll('details[open]')].map((d) => d.dataset.k) : ['env', 'ctx', 'conn'];
+  if (!el.querySelector('.info-body')) el.innerHTML = `<div class="aside-head"><b>${esc(b.name)}</b><button class="icon-btn" data-info-close aria-label="Close">${ICON.close}</button></div><div class="info-body"><div class="muted">${LOADER} Loading…</div></div>`;
   let r;
   try { r = await api(`/api/bots/${b.id}/context`); }
-  catch (e) { $('.ctxp', el).innerHTML = `<div class="empty small">${esc(e.message)}</div>`; return; }
+  catch (e) { r = { error: e.message }; }
+  infoBusy = false;
+  if (infoBot !== b.id) return;
+  const sec = (k, title, body) => `<details class="info-sec" data-k="${k}" ${keep.includes(k) ? 'open' : ''}><summary>${title}<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m6 9 6 6 6-6"/></svg></summary>${body}</details>`;
+  const env = r.env ? `
+    <div class="info-line">${ICON.monitor}<span>${esc(r.env.where)}</span></div>
+    <div class="info-line" title="${esc(r.env.folder)}">${ICON.box}<span>${esc(r.env.folder.split(/[\\/]/).slice(-3).join('/'))}</span></div>
+    <div class="info-line">${ICON.gear}<span>${esc(r.context?.model || r.env.model || 'Default model')} · ${esc(EFFORTS.find(([v]) => v === r.env.effort)?.[1] || r.env.effort)} effort</span></div>` : '';
+  const conn = r.env ? [
+    ...(r.plugins || []).map((p) => `<div class="info-line"><span class="pi" style="background:${esc(p.color || '#666')}">${esc(p.icon || p.name[0])}</span><span>${esc(p.name)}</span><em>plugin</em></div>`),
+    ...(r.connectors || []).map((c) => `<div class="info-line"><span class="pi" style="background:${esc(c.color || '#666')}">${esc(c.icon || c.name[0])}</span><span>${esc(c.name)}</span><em class="${c.status === 'connected' ? '' : 'bad'}">${c.status === 'connected' ? '' : esc(c.status)}</em></div>`)
+  ].join('') || '<div class="muted">No connectors. Add some from Plugins.</div>' : '';
+  el.querySelector('.info-body').innerHTML =
+    (r.env ? sec('env', 'Environment', env) : '') +
+    sec('ctx', 'Context', r.context ? contextHtml(r.context) : `<div class="muted">${esc(r.error || 'Not available')}</div>`) +
+    (r.env ? sec('conn', 'Connectors', conn + `<button class="btn pill small" data-act="plugins">Manage plugins</button>`) : '');
+}
+function contextHtml(r) {
   const deferred = (c) => /deferred/i.test(c.name);
   const live = r.categories.filter((c) => !deferred(c)), later = r.categories.filter(deferred);
   const pctUsed = r.total ? Math.round((r.used / r.total) * 100) : 0;
   const color = (n) => CTX_COLORS[n] || '#9ca3af';
   const pc = (c) => (c.pct < 0.1 && c.tokens ? '<0.1' : c.pct.toFixed(1)) + '%';
   const row = (c, dim) => `<div class="ctx-row ${dim ? 'dim' : ''}"><i style="background:${color(c.name)}"></i><span>${esc(c.name)}</span><b>${fmtTok(c.tokens)}</b><em>${dim ? '—' : pc(c)}</em></div>`;
-  $('.ctxp', el).innerHTML = `
+  return `<div class="ctxp">
     <div class="ctx-top"><b>${pctUsed}% used</b><span>${fmtTok(r.used)} / ${fmtTok(r.total)}</span></div>
     <div class="ctx-bar">${live.filter((c) => c.name !== 'Free space').map((c) => `<i style="width:${Math.max(c.pct, c.tokens ? 0.4 : 0)}%;background:${color(c.name)}" title="${esc(c.name)}: ${fmtTok(c.tokens)}"></i>`).join('')}</div>
     <div class="ctx-rows">${live.map((c) => row(c)).join('')}</div>
     ${later.length ? `<div class="ctx-rows later" title="Loaded only when the bot asks for them">${later.map((c) => row(c, true)).join('')}</div>` : ''}
     ${r.sections.map((s) => `<details class="ctx-sec"><summary>${ICON.chevron}<span>${esc(s.title)}</span><em>${s.rows.length}</em></summary>
       ${s.rows.map((x) => `<div class="ctx-item"><span title="${esc(x.detail)}">${esc(x.name)}${x.detail ? `<small>${esc(x.detail)}</small>` : ''}</span><b>${x.tokens ? fmtTok(x.tokens) : ''}</b></div>`).join('')}</details>`).join('')}
-    <div class="ctx-foot"><span>${esc(r.model)}</span><button class="btn pill" data-ctx-compact>Compact now</button></div>`;
+    <div class="ctx-foot"><button class="btn pill small" data-info-refresh>Refresh</button><button class="btn pill small" data-ctx-compact>Compact now</button></div></div>`;
 }
+document.addEventListener('click', async (e) => {
+  if (!e.target.closest('#info')) return;
+  if (e.target.closest('[data-info-close]')) return closeInfo();
+  if (e.target.closest('[data-info-refresh]')) return loadInfo();
+  if (e.target.closest('[data-ctx-compact]') && infoBot) await api(`/api/threads/${encodeURIComponent('bot:' + infoBot)}/messages`, { method: 'POST', body: { text: '/compact' } });
+});
 
 function botModal(b) {
   const isNew = !b;
@@ -1621,7 +1657,7 @@ document.addEventListener('click', async (e) => {
   if (t.dataset.approve || t.dataset.reject) buzz(12);
   if (t.dataset.approve) return decide(t.dataset.approve, 'approve', { remember: document.querySelector(`[data-remember="${t.dataset.approve}"]`)?.value || '' });
   if (t.dataset.reject) return rejectModal(t.dataset.reject);
-  if (t.dataset.ctx) { e.preventDefault(); if (cur) contextModal(cur); return; }
+  if (t.dataset.ctx) { e.preventDefault(); if (cur) openInfo(cur); return; }
   if (t.dataset.stop) { e.preventDefault(); return api(`/api/runs/${t.dataset.stop}/stop`, { method: 'POST' }); }
   if (t.dataset.unattach) { attachments = attachments.filter((a) => a.key !== t.dataset.unattach); return drawAttachments(); }
   const act = t.dataset.act;
@@ -1666,7 +1702,8 @@ document.addEventListener('click', async (e) => {
       return;
     }
     case 'menu': e.stopPropagation(); return $('#side').classList.toggle('open');
-    case 'panel': e.stopPropagation(); $('#side').classList.remove('open'); return $('#aside').classList.toggle('open');
+    case 'panel': e.stopPropagation(); $('#side').classList.remove('open'); closeInfo(); return $('#aside').classList.toggle('open');
+    case 'info': e.stopPropagation(); return infoBot === cur?.id && $('#info').classList.contains('open') ? closeInfo() : cur && openInfo(cur);
     case 'logout': await api('/api/logout', { method: 'POST' }); location.href = '/login'; return;
     case 'notify':
       if (!('Notification' in window)) return toast('This browser doesn’t support notifications');
@@ -1716,7 +1753,7 @@ document.addEventListener('submit', async (e) => {
   if (e.target.id !== 'composer') return;
   e.preventDefault();
   const ta = $('#msg'); const text = ta.value.trim();
-  if (/^\/context$/i.test(text) && S.current?.type === 'bot') { ta.value = ''; autosize(ta); return contextModal(bot(S.current.id)); }
+  if (/^\/context$/i.test(text) && S.current?.type === 'bot') { ta.value = ''; autosize(ta); return openInfo(bot(S.current.id)); }
   if (/^\/(new|clear)$/i.test(text)) { ta.value = ''; autosize(ta); await api(`/api/bots/${S.current.id}/reset`, { method: 'POST' }); return; }
   if (attachments.some((a) => !a.id && !a.error)) return toast('Still uploading…');
   const files = attachments.filter((a) => a.id).map((a) => a.id);

@@ -315,8 +315,14 @@ route('PUT', '/api/bots/:id/memory', async (req, res, p) => {
 });
 // Where this chat's context goes (Claude Code's /context report).
 route('GET', '/api/bots/:id/context', async (req, res, p, url) => {
-  try { json(res, 200, await contextReport(Number(p.id), url.searchParams.get('thread') || 'bot:' + Number(p.id))); }
-  catch (e) { json(res, 400, { error: e.message }); }
+  const bot = parseBot(q('SELECT * FROM bots WHERE id=?').get(Number(p.id)));
+  if (!bot) return json(res, 404, { error: 'No such bot' });
+  const env = { where: computersOn() && bot.computer ? 'Its own computer' : 'This server', folder: botDir(bot.id), effort: bot.effort, model: bot.model || '' };
+  const plugins = q('SELECT plugin_id FROM bot_plugins WHERE bot_id=?').all(bot.id).map((r) => r.plugin_id).map((id) => PLUGINS.find((x) => x.id === id)).filter(Boolean).map(({ id, name, icon, color }) => ({ id, name, icon, color }));
+  const connectors = connCache.list.filter((c) => !plugins.some((p) => sameName(p.name, c.name))).map(({ name, status }) => ({ name, status, ...(({ icon, color }) => ({ icon, color }))(PLUGINS.find((x) => sameName(x.name, name)) || {}) }));
+  let context = null, error = '';
+  try { context = await contextReport(bot.id, url.searchParams.get('thread') || 'bot:' + bot.id); } catch (e) { error = e.message; }
+  json(res, 200, { env, plugins, connectors, context, error });
 });
 route('POST', '/api/bots/:id/reset', (req, res, p) => {
   q('DELETE FROM sessions WHERE bot_id=?').run(p.id);
