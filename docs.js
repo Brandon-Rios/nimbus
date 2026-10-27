@@ -317,7 +317,7 @@ export async function exportDoc(docId, format) {
   if (!doc) throw new DocError('not_found', 'No such document');
   const blocks = getBlocks(docId).filter((b) => b.type !== 'pending' && b.type !== 'chart');
   const mdText = `---\ntitle: "${doc.title.replace(/"/g, '\\"')}"\n---\n\n` + blocks.map(blockToMarkdown).join('\n\n') + '\n';
-  const safe = doc.title.replace(/[^\w\- ]+/g, '').trim().slice(0, 60) || 'document';
+  const safe = doc.title.replace(/[\/:*?"<>|\x00-\x1f]+/g, '').replace(/\.+$/, '').trim().slice(0, 80) || 'document';
   if (format === 'md') return { name: safe + '.md', type: 'text/markdown', buf: Buffer.from(docMarkdown(doc, blocks)) };
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'nimbus-doc-'));
   try {

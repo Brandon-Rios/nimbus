@@ -239,5 +239,22 @@ public class MainActivity extends Activity {
     /** Called from the Nimbus page's user menu ("App: server address"), which only shows inside this app. */
     private class Bridge {
         @android.webkit.JavascriptInterface public void changeServer() { runOnUiThread(() -> askForUrl("Your Nimbus address:")); }
+        /** Downloads (exports, file cards): the page fetches the file and hands it over; saved to Downloads, then opened. */
+        @android.webkit.JavascriptInterface public void saveFile(String name, String mime, String b64) {
+            try {
+                byte[] data = android.util.Base64.decode(b64, android.util.Base64.DEFAULT);
+                android.content.ContentValues v = new android.content.ContentValues();
+                v.put(android.provider.MediaStore.Downloads.DISPLAY_NAME, name.replaceAll("[/\\\\]", "_"));
+                v.put(android.provider.MediaStore.Downloads.MIME_TYPE, mime);
+                Uri uri = getContentResolver().insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
+                try (java.io.OutputStream out = getContentResolver().openOutputStream(uri)) { out.write(data); }
+                runOnUiThread(() -> {
+                    android.widget.Toast.makeText(MainActivity.this, "Saved to Downloads: " + name, android.widget.Toast.LENGTH_SHORT).show();
+                    try { startActivity(new Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)); } catch (Exception ignored) {}
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> android.widget.Toast.makeText(MainActivity.this, "Couldn't save " + name + ": " + e.getMessage(), android.widget.Toast.LENGTH_LONG).show());
+            }
+        }
     }
 }
