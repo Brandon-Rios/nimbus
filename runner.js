@@ -37,6 +37,15 @@ function findClaude() {
 // Opt every bot run out of Claude Code's usage telemetry, error reporting and feedback surveys.
 // (Whether chats may be used for model training is an account setting at claude.ai, not something
 // Claude Code controls; see README → Privacy.)
+// Office-file tooling (Word/Excel/PowerPoint): Node libraries (docx, pptxgenjs…) and a Python venv
+// (openpyxl, pandas, markitdown…) installed by install.sh. Bots find them through NODE_PATH and PATH.
+const OFFICE_DIR = process.env.NIMBUS_OFFICE_DIR || path.join(os.homedir(), 'opt');
+export function officeEnv() {
+  const env = {}, nodeMods = path.join(OFFICE_DIR, 'office-node', 'node_modules'), py = path.join(OFFICE_DIR, 'office-py', 'bin');
+  if (fs.existsSync(nodeMods)) env.NODE_PATH = [nodeMods, process.env.NODE_PATH].filter(Boolean).join(path.delimiter);
+  if (fs.existsSync(py)) env.PATH = [py, process.env.PATH].join(path.delimiter);
+  return env;
+}
 const PRIVACY_ENV = { DISABLE_TELEMETRY: '1', DISABLE_ERROR_REPORTING: '1', CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY: '1' };
 const RUN_TIMEOUT_MS = Number(process.env.NIMBUS_RUN_TIMEOUT_MIN || 45) * 60_000;
 const MAX_HANDOFF_DEPTH = 4;
@@ -300,7 +309,7 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet }) {
       ? remoteRun(bot, cwd, runId, args, fullPrompt, { ...PRIVACY_ENV, ...claudeEnv(), ...hookEnv, NIMBUS_URL: agentConfig().callback })
       : spawn(CLAUDE_BIN, args, {
         cwd,
-        env: { ...process.env, ...PRIVACY_ENV, ...claudeEnv(), ...hookEnv, NIMBUS_URL: `http://127.0.0.1:${process.env.PORT || 8787}` },
+        env: { ...process.env, ...officeEnv(), ...PRIVACY_ENV, ...claudeEnv(), ...hookEnv, NIMBUS_URL: `http://127.0.0.1:${process.env.PORT || 8787}` },
         stdio: ['pipe', 'pipe', 'pipe']
       });
     procs.set(runId, child);

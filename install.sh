@@ -113,6 +113,23 @@ if yesno "$NIMBUS_DICTATION"; then
   fi
 else ok "Skipped (you can re-run this later)"; fi
 
+bold "     Office files (optional, ~1.5 GB): bots read, create and edit Word, Excel, PowerPoint and PDF"
+ask NIMBUS_OFFICE "Install LibreOffice, pandoc and the Office libraries? (y/n)" "y"
+if yesno "$NIMBUS_OFFICE"; then
+  if have soffice && have pandoc && have pdftoppm && have zip; then ok "LibreOffice and pandoc already installed"
+  elif [ -n "$SUDO" ] || [ "$(id -u)" = 0 ]; then
+    echo "  Installing LibreOffice, pandoc and fonts (a few minutes)…"
+    $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends libreoffice-writer libreoffice-calc libreoffice-impress libreoffice-core \
+      pandoc poppler-utils zip python3-pip python3-venv python3-dev fonts-liberation fonts-dejavu fonts-crosextra-carlito fonts-crosextra-caladea >/dev/null \
+      && ok "LibreOffice and pandoc installed" || warn "Couldn't install the Office tools; bots can still read plain text"
+  else warn "Needs sudo for LibreOffice and pandoc; skipped"; fi
+  mkdir -p "$HOME/opt/office-node"
+  (cd "$HOME/opt/office-node" && { [ -f package.json ] || npm init -y >/dev/null; } && npm install -s --no-audit --no-fund docx pptxgenjs sharp react react-dom react-icons >/dev/null) && ok "Node Office libraries ready" || warn "Couldn't install the Node Office libraries"
+  { [ -x "$HOME/opt/office-py/bin/python" ] || python3 -m venv "$HOME/opt/office-py"; } 2>/dev/null \
+    && "$HOME/opt/office-py/bin/pip" install -q --disable-pip-version-check openpyxl pandas "markitdown[docx,pptx,xlsx,pdf]" lxml defusedxml pypdf pdfplumber reportlab pdf2image python-docx python-pptx >/dev/null \
+    && ok "Python Office libraries ready" || warn "Couldn't set up the Python Office libraries (needs python3-venv)"
+else ok "Skipped (you can re-run this later)"; fi
+
 bold "5/6  Keep Nimbus running"
 ask NIMBUS_SERVICE "Install it as a system service that starts on boot? Needs sudo. (y/n)" "y"
 if yesno "$NIMBUS_SERVICE"; then

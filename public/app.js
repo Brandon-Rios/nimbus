@@ -573,7 +573,9 @@ function renderFiles(m) {
   if (!files.length) return '';
   return `<div class="files">${files.map((f) => isImage(f)
     ? `<a class="file-img" href="${fileUrl(f)}" target="_blank" rel="noopener"><img src="${fileUrl(f)}" alt="${esc(f.name)}" loading="lazy"></a>`
-    : `<a class="file-chip" href="${fileUrl(f)}" target="_blank" rel="noopener">${ICON.clip}<span>${esc(f.name)}</span><small>${fmtSize(f.size)}</small></a>`).join('')}</div>`;
+    : f.preview ? `<div class="file-card"><a href="${fileUrl(f.preview)}" target="_blank" rel="noopener"><img src="${fileUrl(f.preview)}" alt="Preview of ${esc(f.name)}" loading="lazy"></a>
+        <div class="fc-row">${ICON.clip}<span>${esc(f.name)}</span><small>${fmtSize(f.size)}</small><a class="btn pill small" href="${fileUrl(f)}" download>Download</a></div></div>`
+        : `<a class="file-chip" href="${fileUrl(f)}" target="_blank" rel="noopener">${ICON.clip}<span>${esc(f.name)}</span><small>${fmtSize(f.size)}</small></a>`).join('')}</div>`;
 }
 function fmtSize(n) { return n < 1024 ? n + ' B' : n < 1048576 ? Math.round(n / 1024) + ' KB' : (n / 1048576).toFixed(1) + ' MB'; }
 
@@ -762,6 +764,7 @@ function renderMessage(m, prev) {
   const b = bot(m.author) || { name: 'Deleted bot', color: '#555' };
   if (m.kind === 'trace') return renderTrace(m, prev);
   if (m.kind === 'approval') return renderApproval(m, b, prev);
+  if (m.kind === 'doc') { let d = {}; try { d = JSON.parse(m.body); } catch {} return `<div class="msg bot" data-mid="${m.id}">${speakerLabel(m, prev)}<button class="doc-card" data-doc-open="${esc(d.docId || '')}"><span class="dc-ico">📄</span><span><b>${esc(d.title || 'Document')}</b><small>Live document · click to open</small></span><span class="dc-open">Open</span></button></div>`; }
   return `<div class="msg bot ${m.kind === 'error' ? 'error' : ''}" data-mid="${m.id}" title="${clock(m.created_at)}">${speakerLabel(m, prev)}<div class="bubble md">${md(m.body)}</div>
     <div class="msg-actions"><button data-copy="${m.id}">Copy</button>${m.kind === 'error' ? '<button data-continue="1">Try again</button>' : `<button data-speak="${m.id}">▶ Read aloud</button><button data-continue="1">Continue</button>`}</div></div>`;
 }
@@ -900,6 +903,13 @@ function connect() {
   let pending;
   const soon = () => { clearTimeout(pending); pending = setTimeout(async () => { await refreshState(); if (S.current) updateHeaderBits(); }, 150); };
   for (const ev of ['bot_status', 'state_changed', 'approvals_changed']) es.addEventListener(ev, soon);
+  es.addEventListener('doc_changed', (e) => {
+    const m = JSON.parse(e.data);
+    if (m.id !== DOC.id) return;
+    if (m.deleted) return closeDoc();
+    if (m.actor === 'you' && !m.comments) return; // our own edit: already reloaded
+    reloadDoc(m.blocks || []);
+  });
   es.onerror = () => { fetch('/api/state').then((r) => { if (r.status === 401) location.href = '/login'; }).catch(() => {}); };
   es.onopen = () => { refreshState(); if (S.current) openThread(threadKey()); };
 }
@@ -1669,6 +1679,307 @@ async function decide(id, decision, extra = {}) {
   catch (e) { toast(e.message); }
 }
 
+// ---------- live documents (block editor) ----------
+// A document is a list of blocks with stable ids. Click a block to edit it; bots edit through operations
+// and you see their changes appear live. If a bot changes the block you're editing, you choose whose text
+// to keep. Comments anchor to a block and the quoted words.
+const DOC = { id: null, d: null, editing: null, panel: '', flash: new Set() };
+const docInline = (t) => esc(t)
+  .replace(/`([^`]+)`/g, '<code>$1</code>')
+  .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+  .replace(/(^|[^*\w])\*([^*\n]+)\*(?!\w)/g, '$1<em>$2</em>')
+  .replace(/~~([^~]+)~~/g, '<s>$1</s>')
+  .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+function docBlockMd(b) {
+  const a = b.attrs || {};
+  switch (b.type) {
+    case 'heading': return '#'.repeat(a.level || 2) + ' ' + b.md;
+    case 'quote': return b.md.split('\n').map((l) => '> ' + l).join('\n');
+    case 'code': return '```' + (a.lang || '') + '\n' + b.md + '\n```';
+    case 'chart': return '```chart\n' + b.md + '\n```';
+    case 'divider': return '---';
+    case 'pending': return `<!-- pending: ${a.intent || ''} -->`;
+    default: return b.md;
+  }
+}
+function docTable(src) {
+  const rows = src.split('\n').filter((l) => l.trim() && !/^\s*\|?\s*:?-{2,}/.test(l)).map((l) => l.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim()));
+  if (!rows.length) return '';
+  const [head, ...body] = rows;
+  return `<div class="dt-wrap"><table><thead><tr>${head.map((c) => `<th>${docInline(c)}</th>`).join('')}</tr></thead><tbody>${body.map((r) => `<tr>${r.map((c) => `<td>${docInline(c)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+}
+function docChart(svg) {
+  // A sandboxed frame with no scripts and no network: the chart can't reach the app or the internet.
+  const vb = svg.match(/viewBox="\s*[\d.-]+\s+[\d.-]+\s+([\d.]+)\s+([\d.]+)/);
+  const ratio = vb ? `${vb[1]} / ${vb[2]}` : '16 / 9';
+  const html = `<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:"><style>html,body{margin:0;height:100%;background:#fff}svg{width:100%;height:100%;display:block}</style>${svg}`;
+  return `<iframe class="doc-chart" sandbox="" referrerpolicy="no-referrer" style="aspect-ratio:${ratio}" srcdoc="${esc(html)}" title="Chart"></iframe>`;
+}
+function docMarkQuotes(html, b) {
+  const cms = (DOC.d?.comments || []).filter((c) => c.block_id === b.id && !c.resolved && !c.parent && c.quote && !c.detached);
+  for (const c of cms) { const q = esc(c.quote); const i = html.indexOf(q); if (i >= 0) html = html.slice(0, i) + `<mark class="cm" data-cm="${c.id}">${q}</mark>` + html.slice(i + q.length); }
+  return html;
+}
+function docBlockHtml(b) {
+  const a = b.attrs || {};
+  const list = (tag, re) => `<${tag}>${b.md.split('\n').filter((l) => l.trim()).map((l) => `<li style="margin-left:${Math.min(4, Math.floor((l.match(/^\s*/)[0].length) / 2)) * 1.4}em">${docInline(l.replace(re, ''))}</li>`).join('')}</${tag}>`;
+  let h;
+  switch (b.type) {
+    case 'heading': h = `<h${Math.min(4, a.level || 2)}>${docInline(b.md)}</h${Math.min(4, a.level || 2)}>`; break;
+    case 'bullets': h = list('ul', /^\s*[-*+] /); break;
+    case 'numbered': h = list('ol', /^\s*\d+[.)] /); break;
+    case 'todo': h = `<ul class="todo">${b.md.split('\n').filter((l) => l.trim()).map((l, i) => { const done = /\[[xX]\]/.test(l); return `<li class="${done ? 'done' : ''}"><input type="checkbox" data-todo="${i}" ${done ? 'checked' : ''}><span>${docInline(l.replace(/^\s*[-*+] \[[ xX]\] /, ''))}</span></li>`; }).join('')}</ul>`; break;
+    case 'quote': h = `<blockquote>${docInline(b.md).replace(/\n/g, '<br>')}</blockquote>`; break;
+    case 'code': h = `<pre><code>${esc(b.md)}</code></pre>`; break;
+    case 'table': h = docTable(b.md); break;
+    case 'divider': h = '<hr>'; break;
+    case 'chart': h = docChart(b.md); break;
+    case 'pending': h = `<div class="pending"><span class="shimmer">${esc(a.intent || 'Writing…')}</span><i></i><i></i><i></i></div>`; break;
+    default: h = `<p>${docInline(b.md).replace(/\n/g, '<br>')}</p>`;
+  }
+  const n = (DOC.d?.comments || []).filter((c) => c.block_id === b.id && !c.resolved).length;
+  return `<div class="blk ${b.type} ${DOC.flash.has(b.id) ? 'flash' : ''}" data-bid="${b.id}">
+    <div class="blk-gutter"><button class="blk-btn" data-blk-add title="Add a block below">+</button><button class="blk-btn" data-blk-menu title="More">⋮</button></div>
+    <div class="blk-body">${docMarkQuotes(h, b)}</div>${n ? `<button class="blk-cm" data-blk-comments title="Comments">💬 ${n}</button>` : ''}</div>`;
+}
+function renderDoc() {
+  const el = $('#docpane'), d = DOC.d;
+  if (!d) return;
+  const editingEl = DOC.editing && el.querySelector(`.blk[data-bid="${DOC.editing}"] textarea, .blk-new textarea`);
+  const keep = editingEl ? { id: DOC.editing, value: editingEl.value, start: editingEl.selectionStart } : null;
+  const scroll = el.querySelector('.doc-scroll')?.scrollTop || 0;
+  const created = d.created_at ? new Date(d.created_at * 1000).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+  const author = d.bot_id ? bot(d.bot_id)?.name : userName();
+  const open = (d.comments || []).filter((c) => !c.resolved).length;
+  el.innerHTML = `
+    <div class="doc-head">
+      <span class="doc-name">${esc(d.title)}</span>
+      <div class="doc-tools">
+        <button class="icon-btn" data-doc-panel="comments" title="Comments" aria-label="Comments">💬${open ? `<i class="count">${open}</i>` : ''}</button>
+        <button class="icon-btn" data-doc-panel="history" title="Version history" aria-label="History">${ICON.clock}</button>
+        <button class="btn pill small" data-doc-export>Export</button>
+        <button class="icon-btn" data-doc-wide title="Wider" aria-label="Wider">↔</button>
+        <button class="icon-btn" data-doc-close aria-label="Close">${ICON.close}</button>
+      </div>
+    </div>
+    <div class="doc-main">
+      <div class="doc-scroll"><article class="doc">
+        <h1 class="doc-title" contenteditable="true" spellcheck="false" data-doc-title>${esc(d.title)}</h1>
+        <div class="doc-meta"><span class="chip">📅 ${esc(created)}</span><span class="chip">@${esc(author || 'You')}</span><span class="muted small">rev ${d.rev}</span></div>
+        ${d.blocks.map(docBlockHtml).join('')}
+        <button class="doc-add-end" data-blk-add-end>+ Add a block</button>
+      </article></div>
+      ${DOC.panel ? `<div class="doc-side">${DOC.panel === 'history' ? '<div class="muted">Loading…</div>' : docCommentsHtml()}</div>` : ''}
+    </div>`;
+  el.querySelector('.doc-scroll').scrollTop = scroll;
+  if (DOC.panel === 'history') loadDocHistory();
+  if (keep) {
+    const blk = el.querySelector(`.blk[data-bid="${keep.id}"]`);
+    if (blk) { docEditBlock(blk, keep.value); const ta = blk.querySelector('textarea'); ta.setSelectionRange(keep.start, keep.start); }
+  }
+  DOC.flash.clear();
+}
+function docCommentsHtml() {
+  const cs = DOC.d.comments || [];
+  const roots = cs.filter((c) => !c.parent);
+  const replies = (id) => cs.filter((c) => c.parent === id);
+  const one = (c) => `<div class="cm-item ${c.resolved ? 'resolved' : ''}" data-cm-id="${c.id}">
+      ${c.quote ? `<div class="cm-quote ${c.detached ? 'detached' : ''}" data-cm-goto="${esc(c.block_id || '')}">“${esc(c.quote)}”${c.detached ? ' · text changed' : ''}</div>` : ''}
+      <div class="cm-by"><b>${esc(c.author)}</b> <span class="muted">${timeAgo(c.created_at)}</span></div><div class="cm-body">${docInline(c.body)}</div>
+      ${replies(c.id).map((r) => `<div class="cm-reply"><b>${esc(r.author)}</b> ${docInline(r.body)}</div>`).join('')}
+      ${c.resolved ? '<div class="muted small">Resolved</div>' : `<div class="cm-actions"><input placeholder="Reply…" data-cm-reply="${c.id}"><button class="btn pill small" data-cm-resolve="${c.id}">Resolve</button></div>`}</div>`;
+  return `<div class="doc-side-head"><b>Comments</b><span class="muted small">Select text in a block, then ⋮ → Comment</span></div>
+    ${roots.length ? roots.sort((a, b) => a.resolved - b.resolved).map(one).join('') : '<div class="muted">No comments yet.</div>'}`;
+}
+async function loadDocHistory() {
+  const side = $('#docpane .doc-side');
+  const vs = await api(`/api/docs/${DOC.id}/versions`).catch(() => []);
+  if (!side || DOC.panel !== 'history') return;
+  side.innerHTML = `<div class="doc-side-head"><b>Version history</b></div>` + vs.map((v) => `
+    <div class="ver"><div><b>Version ${v.rev}</b> <span class="muted small">${timeAgo(v.at)}</span></div><div class="muted small">${esc(v.actor || '')} · ${esc(v.summary || '')}</div>
+    ${v.rev !== DOC.d.rev ? `<button class="btn pill small" data-doc-restore="${v.rev}">Restore</button>` : '<span class="muted small">Current</span>'}</div>`).join('');
+}
+async function openDoc(id) {
+  DOC.id = id; DOC.editing = null;
+  closeInfo(); $('#aside').classList.remove('open');
+  const el = $('#docpane');
+  el.classList.add('open');
+  el.innerHTML = `<div class="doc-head"><span class="doc-name">Loading…</span><div class="doc-tools"><button class="icon-btn" data-doc-close aria-label="Close">${ICON.close}</button></div></div>`;
+  try { DOC.d = await api(`/api/docs/${id}`); renderDoc(); }
+  catch (e) { toast(e.message); closeDoc(); }
+}
+function closeDoc() { DOC.id = null; DOC.d = null; DOC.editing = null; $('#docpane').classList.remove('open', 'wide'); }
+async function reloadDoc(flashIds = []) {
+  if (!DOC.id) return;
+  const d = await api(`/api/docs/${DOC.id}`).catch(() => null);
+  if (!d || !DOC.id) return;
+  flashIds.forEach((x) => DOC.flash.add(x));
+  DOC.d = d;
+  renderDoc();
+}
+async function docOps(payload) {
+  try { const r = await api(`/api/docs/${DOC.id}/ops`, { method: 'POST', body: payload }); return r; }
+  catch (e) { toast(e.message); throw e; }
+}
+// Edit a block in place as Markdown. Ctrl/Cmd+Enter or clicking away saves; Esc cancels.
+function docEditBlock(blk, value) {
+  const id = blk.dataset.bid, b = DOC.d.blocks.find((x) => x.id === id);
+  if (!b) return;
+  DOC.editing = id;
+  const body = blk.querySelector('.blk-body');
+  body.innerHTML = `<textarea class="blk-edit" spellcheck="true">${esc(value ?? docBlockMd(b))}</textarea><div class="blk-hint muted small">Markdown · Ctrl+Enter to save · Esc to cancel</div>`;
+  blk.classList.add('editing');
+  const ta = body.querySelector('textarea');
+  ta.dataset.hash = b.hash;
+  const fit = () => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 2 + 'px'; };
+  fit(); ta.focus(); ta.addEventListener('input', fit);
+  ta.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); DOC.editing = null; renderDoc(); }
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); docSaveBlock(blk, ta); }
+  });
+  ta.addEventListener('blur', () => setTimeout(() => { if (DOC.editing === id && document.activeElement !== ta && !blk.querySelector('.blk-conflict')) docSaveBlock(blk, ta); }, 150));
+}
+async function docSaveBlock(blk, ta, force = false) {
+  const id = blk.dataset.bid, b = DOC.d.blocks.find((x) => x.id === id);
+  const text = ta.value;
+  if (!b || (!force && text === docBlockMd(b))) { DOC.editing = null; return renderDoc(); }
+  const op = text.trim() ? { op: 'replace', target: { blocks: [id] }, with: { markdown: text } } : { op: 'delete', target: { blocks: [id] } };
+  if (!force) op.ifHash = ta.dataset.hash;
+  try {
+    const r = await fetch(`/api/docs/${DOC.id}/ops`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ops: [op] }) });
+    const out = await r.json().catch(() => ({}));
+    if (r.status === 409) {
+      // Someone (usually a bot) changed this block while you typed. You decide.
+      blk.querySelector('.blk-conflict')?.remove();
+      blk.querySelector('.blk-body').insertAdjacentHTML('beforeend', `<div class="blk-conflict">This block changed while you were editing.
+        <button class="btn pill small primary" data-conflict="mine">Keep mine</button><button class="btn pill small" data-conflict="theirs">Use the new version</button></div>`);
+      return;
+    }
+    if (!r.ok) throw new Error(out.error || 'Save failed');
+    DOC.editing = null;
+    await reloadDoc();
+  } catch (e) { toast(e.message); }
+}
+function docNewBlock(afterId) {
+  document.querySelector('#docpane .blk-new')?.remove();
+  const html = `<div class="blk blk-new"><div class="blk-body"><textarea class="blk-edit" placeholder="Write Markdown: ## Heading, - list, | table |, > quote…"></textarea><div class="blk-hint muted small">Ctrl+Enter to add · Esc to cancel</div></div></div>`;
+  const ref = afterId ? $(`#docpane .blk[data-bid="${afterId}"]`) : $('#docpane .doc-add-end');
+  ref.insertAdjacentHTML(afterId ? 'afterend' : 'beforebegin', html);
+  const ta = $('#docpane .blk-new textarea');
+  ta.focus();
+  const save = async () => {
+    const v = ta.value.trim();
+    document.querySelector('#docpane .blk-new')?.remove();
+    if (!v) return;
+    await docOps({ ops: [{ op: 'insert', target: afterId ? { blocks: [afterId] } : { at: 'end' }, side: 'after', source: { markdown: v } }] }).catch(() => {});
+    reloadDoc();
+  };
+  ta.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') ta.closest('.blk-new').remove();
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(); }
+  });
+  ta.addEventListener('blur', () => setTimeout(() => { if (document.activeElement !== ta && document.contains(ta)) save(); }, 150));
+}
+function docBlockMenu(btn, blk) {
+  document.querySelector('.doc-menu')?.remove();
+  const sel = String(getSelection() || '').trim();
+  const quote = sel && blk.contains(getSelection().anchorNode) ? sel.slice(0, 300) : '';
+  const m = document.createElement('div');
+  m.className = 'popover doc-menu';
+  m.innerHTML = [['comment', quote ? `Comment on “${esc(quote.slice(0, 24))}${quote.length > 24 ? '…' : ''}”` : 'Comment'], ['up', 'Move up'], ['down', 'Move down'], ['edit', 'Edit'], ['delete', 'Delete']]
+    .map(([k, l]) => `<button data-dm="${k}"><span>${l}</span></button>`).join('');
+  document.body.append(m);
+  const r = btn.getBoundingClientRect();
+  m.style.top = Math.min(r.bottom + 4, innerHeight - m.offsetHeight - 8) + 'px';
+  m.style.left = Math.max(8, Math.min(r.left, innerWidth - m.offsetWidth - 8)) + 'px';
+  m.addEventListener('click', async (e) => {
+    const k = e.target.closest('[data-dm]')?.dataset.dm;
+    m.remove();
+    const id = blk.dataset.bid, i = DOC.d.blocks.findIndex((b) => b.id === id), b = DOC.d.blocks[i];
+    if (k === 'edit') return docEditBlock(blk);
+    if (k === 'delete') { await docOps({ ops: [{ op: 'delete', target: { blocks: [id] }, ifHash: b.hash }] }).catch(() => {}); return reloadDoc(); }
+    if (k === 'up' && i > 0) { await docOps({ ops: [{ op: 'move', target: { blocks: [id] }, side: 'before', ref: DOC.d.blocks[i - 1].id }] }).catch(() => {}); return reloadDoc(); }
+    if (k === 'down' && i < DOC.d.blocks.length - 1) { await docOps({ ops: [{ op: 'move', target: { blocks: [id] }, side: 'after', ref: DOC.d.blocks[i + 1].id }] }).catch(() => {}); return reloadDoc(); }
+    if (k === 'comment') {
+      const text = prompt(quote ? `Comment on “${quote}”` : 'Comment on this block');
+      if (!text?.trim()) return;
+      await api(`/api/docs/${DOC.id}/comments`, { method: 'POST', body: { blockId: id, quote, body: text } }).catch((err) => toast(err.message));
+      DOC.panel = 'comments'; reloadDoc();
+    }
+  });
+  setTimeout(() => document.addEventListener('mousedown', function off(ev) { if (!m.contains(ev.target)) { m.remove(); document.removeEventListener('mousedown', off); } }), 0);
+}
+document.addEventListener('click', async (e) => {
+  const pane = e.target.closest('#docpane');
+  const open = e.target.closest('[data-doc-open]');
+  if (open) { e.preventDefault(); return openDoc(open.dataset.docOpen); }
+  if (!pane) return;
+  const t = e.target;
+  if (t.closest('[data-doc-close]')) return closeDoc();
+  if (t.closest('[data-doc-wide]')) return pane.classList.toggle('wide');
+  if (t.closest('[data-doc-panel]')) { const p = t.closest('[data-doc-panel]').dataset.docPanel; DOC.panel = DOC.panel === p ? '' : p; return renderDoc(); }
+  if (t.closest('[data-doc-export]')) {
+    document.querySelector('.doc-menu')?.remove();
+    const m = document.createElement('div');
+    m.className = 'popover doc-menu';
+    m.innerHTML = [['docx', 'Word (.docx)'], ['pdf', 'PDF'], ['md', 'Markdown']].map(([f, l]) => `<a href="/api/docs/${DOC.id}/export/${f}" download><span>${l}</span></a>`).join('');
+    document.body.append(m);
+    const r = t.closest('[data-doc-export]').getBoundingClientRect();
+    m.style.top = r.bottom + 4 + 'px'; m.style.left = Math.max(8, r.right - m.offsetWidth) + 'px';
+    setTimeout(() => document.addEventListener('mousedown', function off(ev) { if (!m.contains(ev.target)) { setTimeout(() => m.remove(), 200); document.removeEventListener('mousedown', off); } }), 0);
+    return;
+  }
+  if (t.closest('[data-doc-restore]')) { const rev = t.closest('[data-doc-restore]').dataset.docRestore; if (!confirm(`Restore version ${rev}? The current text stays in the history.`)) return; await api(`/api/docs/${DOC.id}/restore`, { method: 'POST', body: { rev: Number(rev) } }).catch((err) => toast(err.message)); return reloadDoc(); }
+  if (t.closest('[data-cm-resolve]')) { await api(`/api/docs/${DOC.id}/comments/${t.closest('[data-cm-resolve]').dataset.cmResolve}/resolve`, { method: 'POST', body: {} }); return reloadDoc(); }
+  if (t.closest('[data-cm-goto]')) { const blk = pane.querySelector(`.blk[data-bid="${t.closest('[data-cm-goto]').dataset.cmGoto}"]`); blk?.scrollIntoView({ behavior: 'smooth', block: 'center' }); blk?.classList.add('flash'); setTimeout(() => blk?.classList.remove('flash'), 1600); return; }
+  if (t.closest('mark.cm') || t.closest('[data-blk-comments]')) { DOC.panel = 'comments'; return renderDoc(); }
+  const blk = t.closest('.blk');
+  if (t.closest('[data-conflict]') && blk) {
+    const ta = blk.querySelector('textarea');
+    if (t.closest('[data-conflict]').dataset.conflict === 'mine') return docSaveBlock(blk, ta, true);
+    DOC.editing = null; return reloadDoc();
+  }
+  if (t.closest('[data-blk-add-end]')) return docNewBlock(null);
+  if (!blk || blk.classList.contains('blk-new')) return;
+  if (t.closest('[data-blk-add]')) return docNewBlock(blk.dataset.bid);
+  if (t.closest('[data-blk-menu]')) return docBlockMenu(t.closest('[data-blk-menu]'), blk);
+  if (t.closest('[data-todo]')) {
+    const b = DOC.d.blocks.find((x) => x.id === blk.dataset.bid), n = Number(t.dataset.todo);
+    let k = -1;
+    const md2 = b.md.split('\n').map((l) => (l.trim() && ++k === n ? l.replace(/\[([ xX])\]/, (_, c) => (c === ' ' ? '[x]' : '[ ]')) : l)).join('\n');
+    await docOps({ ops: [{ op: 'replace', target: { blocks: [b.id] }, ifHash: b.hash, with: { markdown: md2 } }] }).catch(() => {});
+    return reloadDoc();
+  }
+  if (t.closest('a, iframe') || String(getSelection() || '').length) return;
+  if (!blk.classList.contains('editing') && !DOC.editing) docEditBlock(blk);
+});
+document.addEventListener('keydown', async (e) => {
+  const reply = e.target.closest?.('[data-cm-reply]');
+  if (reply && e.key === 'Enter' && reply.value.trim()) {
+    await api(`/api/docs/${DOC.id}/comments`, { method: 'POST', body: { parent: Number(reply.dataset.cmReply), body: reply.value } }).catch((err) => toast(err.message));
+    reloadDoc();
+  }
+  const title = e.target.closest?.('[data-doc-title]');
+  if (title && e.key === 'Enter') { e.preventDefault(); title.blur(); }
+});
+document.addEventListener('focusout', async (e) => {
+  const title = e.target.closest?.('[data-doc-title]');
+  if (!title || !DOC.d) return;
+  const v = title.textContent.trim();
+  if (v && v !== DOC.d.title) { await docOps({ ops: [], title: v }).catch(() => {}); reloadDoc(); }
+});
+async function docsModal() {
+  const list = await api('/api/docs').catch(() => []);
+  const el = modal(`<div class="modal-head"><h2>Documents</h2><button class="icon-btn" data-close aria-label="Close">${ICON.close}</button></div>
+    <div class="doc-list">${list.length ? list.map((d) => `<button class="card-item" data-doc-open="${d.id}">📄<span><b>${esc(d.title)}</b><small>${d.bot_id ? esc(bot(d.bot_id)?.name || '') + ' · ' : ''}${timeAgo(d.updated_at)} · rev ${d.rev}</small></span></button>`).join('') : '<div class="muted">No documents yet. Ask a bot to write one, or start your own.</div>'}</div>
+    <div class="modal-foot"><button class="btn" data-close>Close</button><button class="btn primary" data-new-doc>New document</button></div>`);
+  el.addEventListener('click', async (e) => {
+    if (e.target.closest('[data-close]')) return closeModal();
+    if (e.target.closest('[data-doc-open]')) return closeModal();
+    if (e.target.closest('[data-new-doc]')) { const d = await api('/api/docs', { method: 'POST', body: { title: 'Untitled', markdown: 'Start writing…' } }); closeModal(); openDoc(d.id); }
+  });
+}
+
 // ---------- events ----------
 document.addEventListener('click', async (e) => {
   const t = e.target.closest('button, [data-open]');
@@ -1698,7 +2009,8 @@ document.addEventListener('click', async (e) => {
   switch (act) {
     case 'new-menu': e.stopPropagation(); return popover(t, [['new-bot', 'New bot', ICON.plus], ['new-room', 'New group chat', ICON.compose], ['market', 'Browse Marketplace', ICON.grid]]);
     case 'claude': return claudeModal();
-    case 'user-menu': e.stopPropagation(); return popover(t, [['appearance', 'Appearance', ICON.gear], ['server', 'Server settings', ICON.monitor], ['log', 'Activity log', ICON.clock], ['claude', S.data.claude?.mode === 'none' ? 'Connect Claude ⚠' : 'Claude account', ICON.plug], ['mfa', 'Two-factor authentication', ICON.lock], ['notify', 'Notifications', ICON.bell], ...(window.NimbusApp ? [['app-server', 'App: server address', ICON.gear]] : []), ['logout', 'Log out', ICON.close]]);
+    case 'docs': return docsModal();
+    case 'user-menu': e.stopPropagation(); return popover(t, [['appearance', 'Appearance', ICON.gear], ['server', 'Server settings', ICON.monitor], ['log', 'Activity log', ICON.clock], ['docs', 'Documents', ICON.book], ['claude', S.data.claude?.mode === 'none' ? 'Connect Claude ⚠' : 'Claude account', ICON.plug], ['mfa', 'Two-factor authentication', ICON.lock], ['notify', 'Notifications', ICON.bell], ...(window.NimbusApp ? [['app-server', 'App: server address', ICON.gear]] : []), ['logout', 'Log out', ICON.close]]);
     case 'new-bot': return botModal();
     case 'edit-bot': return botModal(cur);
     case 'new-room': return roomModal();

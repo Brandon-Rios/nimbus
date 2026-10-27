@@ -10,6 +10,7 @@ import os from 'node:os';
 import { redact } from './redact.js';
 import { addClient, broadcast } from './events.js';
 import { execFile, execFileSync, spawn } from 'node:child_process';
+import * as Docs from './docs.js';
 import { claudeEnv, claudeStatus, setClaudeToken, TOKEN_RE } from './claudeauth.js';
 import { CLAUDE_BIN, computersOn, agentConfig, agent, runBot, stopRun, addMessage, updateMessage, botStatus, roomMembers, findMentions, markTraceWaiting, recoverRuns, HOOK_TOKEN, contextReport } from './runner.js';
 import { TEMPLATES, PLUGINS, publicPlugin } from './catalog.js';
@@ -189,6 +190,175 @@ route('GET', '/api/files/:id/:name', (req, res, p) => {
     'content-security-policy': "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'", 'cache-control': 'private, max-age=31536000, immutable',
     'content-disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(f.name)}` });
   fs.createReadStream(uploadPath(f)).pipe(res);
+});
+
+// Files a bot sends into its chat (bin/send-file.mjs). Office files and PDFs get a first-page preview
+// image rendered with LibreOffice + pdftoppm, when they're installed.
+const OFFICE_RE = /\.(docx?|xlsx?|pptx?|odt|ods|odp|rtf)$/i;
+const FILE_MIME = { pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', csv: 'text/csv', txt: 'text/plain', md: 'text/markdown',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' };
+const runQuiet = (cmd, args, opts = {}) => new Promise((resolve) => execFile(cmd, args, { timeout: 90_000, ...opts }, (err) => resolve(!err)));
+async function renderPreview(file) {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'nimbus-prev-'));
+  try {
+    let pdf = file;
+    if (OFFICE_RE.test(file)) {
+      // A private LibreOffice profile per render, so it never clashes with another instance.
+      await runQuiet('soffice', [`-env:UserInstallation=file://${tmp}/lo`, '--headless', '--convert-to', 'pdf', '--outdir', tmp, file]);
+      pdf = path.join(tmp, path.basename(file).replace(/\.[^.]+$/, '.pdf'));
+    }
+    if (!fs.existsSync(pdf)) return null;
+    if (!(await runQuiet('pdftoppm', ['-png', '-r', '60', '-f', '1', '-l', '1', '-singlefile', pdf, path.join(tmp, 'page')]))) return null;
+    const png = path.join(tmp, 'page.png');
+    return fs.existsSync(png) ? fs.readFileSync(png) : null;
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+}
+function saveUpload(name, type, buf) {
+  const f = { id: crypto.randomBytes(12).toString('hex'), name: safeName(name), type, size: buf.length };
+  fs.mkdirSync(path.join(UPLOADS, f.id), { recursive: true });
+  fs.writeFileSync(uploadPath(f), buf);
+  fs.writeFileSync(path.join(UPLOADS, f.id, 'meta.json'), JSON.stringify(f));
+  return f;
+}
+route('POST', '/api/hook/send-file', async (req, res) => {
+  if (!hookAuth(req)) return json(res, 403, { error: 'forbidden' });
+  const { runId, path: file, caption } = await body(req);
+  const run = q("SELECT * FROM runs WHERE id=? AND status='running'").get(Number(runId));
+  if (!run) return json(res, 400, { error: 'That run isn’t active' });
+  // Only files from the bot's own workspace or the temp folder (not e.g. the server's .env).
+  const real = (() => { try { return fs.realpathSync(String(file)); } catch { return null; } })();
+  const allowed = [botDir(run.bot_id), os.tmpdir()].map((d) => fs.realpathSync(d) + path.sep);
+  if (!real || !allowed.some((d) => real.startsWith(d))) return json(res, 400, { error: 'Put the file in your workspace folder (or /tmp) first' });
+  const st = fs.statSync(real);
+  if (!st.isFile()) return json(res, 400, { error: 'Not a file' });
+  if (st.size > 50 * 1024 * 1024) return json(res, 413, { error: 'Files can be up to 50 MB' });
+  const ext = path.extname(real).slice(1).toLowerCase();
+  const f = saveUpload(path.basename(real), FILE_MIME[ext] || 'application/octet-stream', fs.readFileSync(real));
+  if (OFFICE_RE.test(real) || ext === 'pdf') {
+    const png = await renderPreview(real).catch(() => null);
+    if (png) { const pv = saveUpload(f.name.replace(/\.[^.]+$/, '') + '-preview.png', 'image/png', png); f.preview = { id: pv.id, name: pv.name }; fs.writeFileSync(path.join(UPLOADS, f.id, 'meta.json'), JSON.stringify(f)); }
+  }
+  addMessage(run.thread, run.bot_id, 'text', String(caption || '').slice(0, 2000), run.id, [f]);
+  json(res, 200, { ok: true, name: f.name, size: f.size, preview: !!f.preview });
+});
+
+// ---------- live documents (docs.js) ----------
+// People edit through /api/docs, bots through /api/hook/docs (bin/doc.mjs). Every change is broadcast so
+// open editors update live.
+const docFail = (res, e) => json(res, e instanceof Docs.DocError ? (e.code === 'not_found' ? 404 : e.code === 'guard_mismatch' ? 409 : e.code === 'unavailable' ? 503 : 400) : 500,
+  { error: e.message, code: e.code || 'error', ...(e.block ? { block: e.block } : {}) });
+const docChanged = (id, actor, extra = {}) => broadcast('doc_changed', { id, rev: Docs.getDoc(id)?.rev, actor, ...extra });
+const docView = (d) => d && { ...d, blocks: Docs.getBlocks(d.id), comments: Docs.listComments(d.id) };
+async function sendDocExport(res, id, format) {
+  try {
+    const f = await Docs.exportDoc(id, format);
+    res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': f.buf.length, 'x-content-type-options': 'nosniff',
+      'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(f.name)}` });
+    res.end(f.buf);
+  } catch (e) { docFail(res, e); }
+}
+route('GET', '/api/docs', (req, res) => json(res, 200, q('SELECT id, title, bot_id, thread, rev, updated_at FROM docs ORDER BY updated_at DESC LIMIT 200').all()));
+route('POST', '/api/docs', async (req, res) => {
+  const { title, markdown } = await body(req);
+  try { const d = Docs.createDoc({ title: title || 'Untitled', markdown, actor: 'you' }); json(res, 200, docView(Docs.getDoc(d.id))); } catch (e) { docFail(res, e); }
+});
+route('GET', '/api/docs/:id', (req, res, p) => { const d = Docs.getDoc(p.id); d ? json(res, 200, docView(d)) : json(res, 404, { error: 'No such document' }); });
+route('POST', '/api/docs/:id/ops', async (req, res, p) => {
+  try { const r = Docs.applyOps(p.id, await body(req), 'you'); docChanged(p.id, 'you', { blocks: r.blocks.map((b) => b.id) }); json(res, 200, r); } catch (e) { docFail(res, e); }
+});
+route('DELETE', '/api/docs/:id', (req, res, p) => {
+  for (const t of ['doc_blocks', 'doc_versions', 'doc_comments']) q(`DELETE FROM ${t} WHERE doc_id=?`).run(p.id);
+  q('DELETE FROM docs WHERE id=?').run(p.id);
+  broadcast('doc_changed', { id: p.id, deleted: true });
+  json(res, 200, { ok: true });
+});
+route('GET', '/api/docs/:id/versions', (req, res, p) => json(res, 200, Docs.listVersions(p.id)));
+route('POST', '/api/docs/:id/restore', async (req, res, p) => {
+  try { const r = Docs.restoreVersion(p.id, (await body(req)).rev, 'you'); docChanged(p.id, 'you'); json(res, 200, r); } catch (e) { docFail(res, e); }
+});
+route('POST', '/api/docs/:id/comments', async (req, res, p) => {
+  try { const r = Docs.addComment(p.id, await body(req), 'you'); docChanged(p.id, 'you', { comments: true }); json(res, 200, r); } catch (e) { docFail(res, e); }
+});
+route('POST', '/api/docs/:id/comments/:cid/resolve', async (req, res, p) => {
+  Docs.resolveComment(p.id, p.cid, (await body(req)).resolved !== false); docChanged(p.id, 'you', { comments: true }); json(res, 200, { ok: true });
+});
+route('GET', '/api/docs/:id/export/:format', (req, res, p) => sendDocExport(res, p.id, p.format));
+
+// Bot side. A bot may use documents it created, or any document in the chat it's working in.
+const docRate = new Map(); // runId -> recent call times
+function hookDoc(req, res, runId, docId) {
+  if (!hookAuth(req)) { json(res, 403, { error: 'forbidden' }); return null; }
+  const run = q("SELECT * FROM runs WHERE id=? AND status='running'").get(Number(runId));
+  if (!run) { json(res, 400, { error: 'That run isn’t active' }); return null; }
+  const now = Date.now(), hits = (docRate.get(run.id) || []).filter((t) => now - t < 60_000);
+  if (hits.length >= 120) { json(res, 429, { error: 'Too many document calls; slow down' }); return null; }
+  docRate.set(run.id, [...hits, now]);
+  if (docId) {
+    const d = Docs.getDoc(docId);
+    if (!d || (d.bot_id !== run.bot_id && d.thread !== run.thread)) { json(res, 404, { error: 'No such document (or not yours)' }); return null; }
+  }
+  return run;
+}
+const botActor = (run) => q('SELECT name FROM bots WHERE id=?').get(run.bot_id)?.name || 'Bot';
+route('POST', '/api/hook/docs', async (req, res) => {
+  const b = await body(req);
+  const run = hookDoc(req, res, b.runId);
+  if (!run) return;
+  try {
+    const d = Docs.createDoc({ title: b.title || '', markdown: b.markdown || '', botId: run.bot_id, thread: run.thread, actor: botActor(run) });
+    addMessage(run.thread, run.bot_id, 'doc', { docId: d.id, title: Docs.getDoc(d.id).title }, run.id);
+    json(res, 200, d);
+  } catch (e) { docFail(res, e); }
+});
+route('POST', '/api/hook/docs/list', async (req, res) => {
+  const run = hookDoc(req, res, (await body(req)).runId);
+  if (!run) return;
+  json(res, 200, q('SELECT id, title, rev, updated_at FROM docs WHERE bot_id=? OR thread=? ORDER BY updated_at DESC LIMIT 50').all(run.bot_id, run.thread));
+});
+route('POST', '/api/hook/docs/:id/read', async (req, res, p) => {
+  const b = await body(req);
+  if (!hookDoc(req, res, b.runId, p.id)) return;
+  try {
+    const r = Docs.readDoc(p.id, b);
+    // Comments come along with the outline so bots can answer them; their text is data, not instructions.
+    if ((b.view || 'outline') === 'outline') r.comments = Docs.listComments(p.id).filter((c) => !c.resolved).map(({ id, block_id, quote, body: text, author, parent }) => ({ id, block: block_id, quote, text, author, parent }));
+    json(res, 200, r);
+  } catch (e) { docFail(res, e); }
+});
+route('POST', '/api/hook/docs/:id/ops', async (req, res, p) => {
+  const b = await body(req);
+  const run = hookDoc(req, res, b.runId, p.id);
+  if (!run) return;
+  try { const r = Docs.applyOps(p.id, b, botActor(run)); docChanged(p.id, botActor(run), { blocks: r.blocks.map((x) => x.id) }); json(res, 200, r); } catch (e) { docFail(res, e); }
+});
+route('POST', '/api/hook/docs/:id/comment', async (req, res, p) => {
+  const b = await body(req);
+  const run = hookDoc(req, res, b.runId, p.id);
+  if (!run) return;
+  try {
+    if (b.resolve) Docs.resolveComment(p.id, b.resolve, true);
+    const r = b.body ? Docs.addComment(p.id, b, botActor(run)) : { ok: true };
+    docChanged(p.id, botActor(run), { comments: true }); json(res, 200, r);
+  } catch (e) { docFail(res, e); }
+});
+route('POST', '/api/hook/docs/:id/export', async (req, res, p) => {
+  const b = await body(req);
+  const run = hookDoc(req, res, b.runId, p.id);
+  if (!run) return;
+  try {
+    const f = await Docs.exportDoc(p.id, b.format || 'docx');
+    const up = saveUpload(f.name, f.type, f.buf);
+    if (f.type === 'application/pdf' || /\.docx$/.test(f.name)) {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'nimbus-exp-')), file = path.join(tmp, f.name);
+      fs.writeFileSync(file, f.buf);
+      const png = await renderPreview(file).catch(() => null);
+      fs.rmSync(tmp, { recursive: true, force: true });
+      if (png) { const pv = saveUpload(f.name.replace(/\.[^.]+$/, '') + '-preview.png', 'image/png', png); up.preview = { id: pv.id, name: pv.name }; fs.writeFileSync(path.join(UPLOADS, up.id, 'meta.json'), JSON.stringify(up)); }
+    }
+    addMessage(run.thread, run.bot_id, 'text', String(b.caption || '').slice(0, 2000), run.id, [up]);
+    json(res, 200, { ok: true, name: f.name, size: f.buf.length });
+  } catch (e) { docFail(res, e); }
 });
 
 // Restart the service once no bot is mid-run (a restart kills running bots, including one that asked for it).
