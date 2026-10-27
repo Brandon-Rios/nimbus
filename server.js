@@ -10,7 +10,7 @@ import os from 'node:os';
 import { redact } from './redact.js';
 import { addClient, broadcast } from './events.js';
 import { execFile, execFileSync, spawn } from 'node:child_process';
-import { CLAUDE_BIN, computersOn, agentConfig, agent, runBot, stopRun, addMessage, updateMessage, botStatus, roomMembers, findMentions, markTraceWaiting, recoverRuns, HOOK_TOKEN } from './runner.js';
+import { CLAUDE_BIN, computersOn, agentConfig, agent, runBot, stopRun, addMessage, updateMessage, botStatus, roomMembers, findMentions, markTraceWaiting, recoverRuns, HOOK_TOKEN, contextReport } from './runner.js';
 import { TEMPLATES, PLUGINS, publicPlugin } from './catalog.js';
 import { startScheduler, nextRun, isValidCron } from './scheduler.js';
 import { getPlanUsage } from './planusage.js';
@@ -312,6 +312,11 @@ route('PUT', '/api/bots/:id/memory', async (req, res, p) => {
   fs.writeFileSync(path.join(botDir(p.id), 'MEMORY.md'), String((await body(req)).text || ''));
   broadcast('state_changed', {});
   json(res, 200, { ok: true });
+});
+// Where this chat's context goes (Claude Code's /context report).
+route('GET', '/api/bots/:id/context', async (req, res, p, url) => {
+  try { json(res, 200, await contextReport(Number(p.id), url.searchParams.get('thread') || 'bot:' + Number(p.id))); }
+  catch (e) { json(res, 400, { error: e.message }); }
 });
 route('POST', '/api/bots/:id/reset', (req, res, p) => {
   q('DELETE FROM sessions WHERE bot_id=?').run(p.id);

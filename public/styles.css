@@ -484,3 +484,31 @@ select option { background: var(--panel); color: var(--text); }
 .slash-hint button { display: flex; gap: 10px; align-items: baseline; text-align: left; padding: 7px 10px; border-radius: 8px; font-size: 13px; }
 .slash-hint button:hover { background: var(--hover); }
 .slash-hint span { color: var(--muted); font-size: 12.5px; }
+
+/* Context breakdown */
+.trace .sp button.ctx { background: none; border: 0; padding: 0; font: inherit; color: inherit; cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
+.ctx-modal { max-width: 360px; }
+.ctxp { display: flex; flex-direction: column; gap: 12px; font-size: 14px; }
+.ctx-top { display: flex; justify-content: space-between; align-items: baseline; }
+.ctx-top span { color: var(--muted); font-size: 13px; }
+.ctx-bar { display: flex; gap: 1px; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.ctx-bar i { display: block; height: 100%; }
+.ctx-rows { display: flex; flex-direction: column; gap: 9px; }
+.ctx-rows.later { padding-top: 10px; border-top: 1px solid var(--line); }
+.ctx-row { display: grid; grid-template-columns: 12px 1fr auto 52px; gap: 10px; align-items: center; }
+.ctx-row i { width: 11px; height: 11px; border-radius: 2px; }
+.ctx-row b { font-weight: 400; color: var(--muted); font-variant-numeric: tabular-nums; }
+.ctx-row em { font-style: normal; text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
+.ctx-row.dim { color: var(--muted); } .ctx-row.dim em { color: var(--faint); font-weight: 400; }
+.ctx-row:has(i[style*="transparent"]) i { border: 1px solid var(--line-strong); }
+.ctx-sec { border-top: 1px solid var(--line); padding-top: 10px; }
+.ctx-sec summary { display: flex; align-items: center; gap: 6px; cursor: pointer; list-style: none; color: var(--muted); }
+.ctx-sec summary::-webkit-details-marker { display: none; }
+.ctx-sec summary svg { width: 14px; height: 14px; transition: transform .15s; }
+.ctx-sec[open] summary svg { transform: rotate(90deg); }
+.ctx-sec summary em { margin-left: auto; font-style: normal; color: var(--faint); }
+.ctx-item { display: flex; justify-content: space-between; gap: 10px; padding: 5px 0 0 20px; font-size: 13px; }
+.ctx-item span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctx-item small { color: var(--faint); margin-left: 6px; }
+.ctx-item b { font-weight: 400; color: var(--muted); }
+.ctx-foot { display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--line); padding-top: 12px; color: var(--faint); font-size: 12px; }

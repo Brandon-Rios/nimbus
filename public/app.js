@@ -608,7 +608,7 @@ document.addEventListener('contextmenu', (e) => {
 });
 
 // ---------- slash commands in the message box ----------
-const SLASH = [['/compact', 'Shrink this chat’s history so it uses less context (memory is kept)'], ['/new', 'Start a fresh chat with this bot (memory is kept)']];
+const SLASH = [['/context', 'See what’s using this chat’s context'], ['/compact', 'Shrink this chat’s history so it uses less context (memory is kept)'], ['/new', 'Start a fresh chat with this bot (memory is kept)']];
 function slashHint(v) {
   let box = $('#slash-hint');
   const show = S.current?.type === 'bot' && /^\/\w*$/.test(v);
@@ -782,7 +782,7 @@ function traceStats(t) {
   if (t.tokens) bits.push(`<span title="Tokens read / written this run (including cached context)">${fmtTok(t.tokens.in)} in · ${fmtTok(t.tokens.out)} out</span>`);
   if (t.context) {
     const win = t.contextWindow || 200000, pc = Math.min(100, Math.round((t.context / win) * 100));
-    bits.push(`<span class="ctx ${pc >= 80 ? 'hot' : pc >= 60 ? 'warm' : ''}" title="Context in use: ${t.context.toLocaleString()} of ${win.toLocaleString()} tokens. Near full, start a New chat (memory is kept).">ctx ${pc}%</span>`);
+    bits.push(`<button class="ctx ${pc >= 80 ? 'hot' : pc >= 60 ? 'warm' : ''}" data-ctx="1" title="Context in use: ${t.context.toLocaleString()} of ${win.toLocaleString()} tokens. Click for details.">ctx ${pc}%</button>`);
   }
   const five = planLast?.ok && planLast.windows.find((w) => w.label === '5-hour limit');
   if (five && t.status !== 'running') bits.push(`<span title="Claude plan: 5-hour limit left right now">${Math.max(0, Math.round(100 - five.used))}% left</span>`);
@@ -961,6 +961,35 @@ function closeModal() {
   setTimeout(() => { if (root.contains(scrim)) root.innerHTML = ''; }, 160);
 }
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { if (!$('.modal.sticky')) closeModal(); closePopover(); } });
+
+// Where this chat's context goes, from Claude Code's own /context report.
+const CTX_COLORS = { 'System prompt': '#9ca3af', 'System tools': '#6366f1', 'System tools (deferred)': '#6b7280', 'MCP tools': '#10b981', 'MCP tools (deferred)': '#6b7280',
+  'Memory files': '#a78bfa', 'Skills': '#f59e0b', 'Custom agents': '#ec4899', 'Messages': '#f97316', 'Autocompact buffer': '#4b5563', 'Free space': 'transparent' };
+async function contextModal(b) {
+  const el = modal(`<div class="modal-head"><h2>Context</h2><button class="icon-btn" data-close aria-label="Close">${ICON.close}</button></div>
+    <div class="ctxp"><div class="empty small">${LOADER} Reading ${esc(b.name)}’s context…</div></div>`, { cls: 'ctx-modal' });
+  el.addEventListener('click', async (e) => {
+    if (e.target.closest('[data-close]')) return closeModal();
+    if (e.target.closest('[data-ctx-compact]')) { closeModal(); await api(`/api/threads/${encodeURIComponent('bot:' + b.id)}/messages`, { method: 'POST', body: { text: '/compact' } }); }
+  });
+  let r;
+  try { r = await api(`/api/bots/${b.id}/context`); }
+  catch (e) { $('.ctxp', el).innerHTML = `<div class="empty small">${esc(e.message)}</div>`; return; }
+  const deferred = (c) => /deferred/i.test(c.name);
+  const live = r.categories.filter((c) => !deferred(c)), later = r.categories.filter(deferred);
+  const pctUsed = r.total ? Math.round((r.used / r.total) * 100) : 0;
+  const color = (n) => CTX_COLORS[n] || '#9ca3af';
+  const pc = (c) => (c.pct < 0.1 && c.tokens ? '<0.1' : c.pct.toFixed(1)) + '%';
+  const row = (c, dim) => `<div class="ctx-row ${dim ? 'dim' : ''}"><i style="background:${color(c.name)}"></i><span>${esc(c.name)}</span><b>${fmtTok(c.tokens)}</b><em>${dim ? '—' : pc(c)}</em></div>`;
+  $('.ctxp', el).innerHTML = `
+    <div class="ctx-top"><b>${pctUsed}% used</b><span>${fmtTok(r.used)} / ${fmtTok(r.total)}</span></div>
+    <div class="ctx-bar">${live.filter((c) => c.name !== 'Free space').map((c) => `<i style="width:${Math.max(c.pct, c.tokens ? 0.4 : 0)}%;background:${color(c.name)}" title="${esc(c.name)}: ${fmtTok(c.tokens)}"></i>`).join('')}</div>
+    <div class="ctx-rows">${live.map((c) => row(c)).join('')}</div>
+    ${later.length ? `<div class="ctx-rows later" title="Loaded only when the bot asks for them">${later.map((c) => row(c, true)).join('')}</div>` : ''}
+    ${r.sections.map((s) => `<details class="ctx-sec"><summary>${ICON.chevron}<span>${esc(s.title)}</span><em>${s.rows.length}</em></summary>
+      ${s.rows.map((x) => `<div class="ctx-item"><span title="${esc(x.detail)}">${esc(x.name)}${x.detail ? `<small>${esc(x.detail)}</small>` : ''}</span><b>${x.tokens ? fmtTok(x.tokens) : ''}</b></div>`).join('')}</details>`).join('')}
+    <div class="ctx-foot"><span>${esc(r.model)}</span><button class="btn pill" data-ctx-compact>Compact now</button></div>`;
+}
 
 function botModal(b) {
   const isNew = !b;
@@ -1592,6 +1621,7 @@ document.addEventListener('click', async (e) => {
   if (t.dataset.approve || t.dataset.reject) buzz(12);
   if (t.dataset.approve) return decide(t.dataset.approve, 'approve', { remember: document.querySelector(`[data-remember="${t.dataset.approve}"]`)?.value || '' });
   if (t.dataset.reject) return rejectModal(t.dataset.reject);
+  if (t.dataset.ctx) { e.preventDefault(); if (cur) contextModal(cur); return; }
   if (t.dataset.stop) { e.preventDefault(); return api(`/api/runs/${t.dataset.stop}/stop`, { method: 'POST' }); }
   if (t.dataset.unattach) { attachments = attachments.filter((a) => a.key !== t.dataset.unattach); return drawAttachments(); }
   const act = t.dataset.act;
@@ -1686,6 +1716,7 @@ document.addEventListener('submit', async (e) => {
   if (e.target.id !== 'composer') return;
   e.preventDefault();
   const ta = $('#msg'); const text = ta.value.trim();
+  if (/^\/context$/i.test(text) && S.current?.type === 'bot') { ta.value = ''; autosize(ta); return contextModal(bot(S.current.id)); }
   if (/^\/(new|clear)$/i.test(text)) { ta.value = ''; autosize(ta); await api(`/api/bots/${S.current.id}/reset`, { method: 'POST' }); return; }
   if (attachments.some((a) => !a.id && !a.error)) return toast('Still uploading…');
   const files = attachments.filter((a) => a.id).map((a) => a.id);

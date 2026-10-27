@@ -468,3 +468,58 @@ export function recoverRuns() {
     q('UPDATE messages SET body=? WHERE id=?').run(JSON.stringify(body), m.id);
   }
 }
+
+// ---------- context breakdown ----------
+// Claude Code's own /context report for a chat (where its context window goes: system prompt, tools,
+// skills, messages, free space…). It's a local command, so it costs next to nothing and doesn't change
+// the conversation. Returns { model, used, total, categories:[{name,tokens,pct}], sections:[{title,rows}] }.
+const tokNum = (s) => { const m = String(s).replace(/[~,\s]/g, '').match(/^([\d.]+)([km]?)$/i); return m ? Math.round(parseFloat(m[1]) * (m[2].toLowerCase() === 'm' ? 1e6 : m[2].toLowerCase() === 'k' ? 1e3 : 1)) : null; };
+export function parseContextReport(md) {
+  const out = { model: '', used: 0, total: 0, categories: [], sections: [] };
+  out.model = md.match(/\*\*Model:\*\*\s*(\S+)/)?.[1] || '';
+  const t = md.match(/\*\*Tokens:\*\*\s*([\d.,]+[km]?)\s*\/\s*([\d.,]+[km]?)/i);
+  if (t) { out.used = tokNum(t[1]) || 0; out.total = tokNum(t[2]) || 0; }
+  for (const part of md.split(/^###\s+/m).slice(1)) {
+    const title = part.split('\n')[0].trim();
+    const lines = part.split('\n').filter((l) => /^\|/.test(l) && !/^\|\s*-/.test(l));
+    if (lines.length < 2) continue;
+    const head = lines[0].split('|').slice(1, -1).map((c) => c.trim().toLowerCase());
+    const rows = lines.slice(1).map((l) => l.split('|').slice(1, -1).map((c) => c.trim()));
+    if (/categor/i.test(title)) {
+      for (const r of rows) out.categories.push({ name: r[0], tokens: tokNum(r[1]) ?? 0, pct: parseFloat(r[2]) || 0 });
+    } else {
+      const ti = head.findIndex((h) => /token/.test(h));
+      out.sections.push({ title, rows: rows.map((r) => ({ name: r[0], detail: r.filter((_, i) => i && i !== ti).join(' · '), tokens: ti >= 0 ? tokNum(r[ti]) ?? 0 : 0 })) });
+    }
+  }
+  return out;
+}
+export function contextReport(botId, thread, extraEnv = {}) {
+  return new Promise((resolve, reject) => {
+    const bot = parseBot(q('SELECT * FROM bots WHERE id=?').get(botId));
+    if (!bot) return reject(new Error('No such bot'));
+    if (thread.startsWith('room:')) return reject(new Error('Context details are available in one-to-one chats.'));
+    if (q("SELECT 1 FROM runs WHERE bot_id=? AND thread=? AND status IN ('running','queued')").get(botId, thread)) return reject(new Error('The bot is working. Try again when it finishes.'));
+    const session = q('SELECT session_id FROM sessions WHERE bot_id=? AND thread=?').get(botId, thread)?.session_id;
+    if (!session) return reject(new Error('This chat has no conversation yet. Send a message first.'));
+    const cwd = writeBotBrief(bot, false);
+    const args = ['-p', '/context', '--resume', session, '--output-format', 'json'];
+    const mcp = mcpServers(botId, false);
+    if (Object.keys(mcp).length) args.push('--mcp-config', JSON.stringify({ mcpServers: mcp }));
+    if (bot.model) args.push('--model', bot.model);
+    const child = spawn(CLAUDE_BIN, args, { cwd, env: { ...process.env, ...PRIVACY_ENV, ...extraEnv }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '', err = '';
+    const timer = setTimeout(() => child.kill(), 60_000);
+    child.stdout.on('data', (d) => { out += d; });
+    child.stderr.on('data', (d) => { err += d; });
+    child.on('error', (e) => { clearTimeout(timer); reject(e); });
+    child.on('close', () => {
+      clearTimeout(timer);
+      try {
+        const r = parseContextReport(JSON.parse(out).result || '');
+        if (!r.categories.length) throw new Error();
+        resolve(r);
+      } catch { reject(new Error('Couldn’t read the context report' + (err ? ': ' + err.trim().split('\n').pop() : ''))); }
+    });
+  });
+}
