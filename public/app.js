@@ -41,6 +41,33 @@ async function api(path, opts = {}) {
   if (!res.ok) throw new Error(data.error || 'Request failed');
   return data;
 }
+// Downloads go through fetch so errors show, and so the Android app (whose WebView ignores download links)
+// can save the file through its bridge.
+async function download(url, fallbackName) {
+  try {
+    const res = await fetch(url);
+    if (res.status === 401) { location.href = '/login'; return; }
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `Download failed (${res.status})`);
+    const m = /filename\*=UTF-8''([^;]+)/.exec(res.headers.get('content-disposition') || '');
+    const name = m ? decodeURIComponent(m[1]) : fallbackName || url.split('/').pop();
+    const blob = await res.blob();
+    if (window.NimbusApp?.saveFile) {
+      const b64 = await new Promise((ok) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(',')[1]); r.readAsDataURL(blob); });
+      window.NimbusApp.saveFile(name, blob.type || 'application/octet-stream', b64);
+      return;
+    }
+    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: name });
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+  } catch (e) { toast(e.message); }
+}
+document.addEventListener('click', (e) => {
+  const a = e.target.closest('a[download]');
+  if (!a || a.href.startsWith('blob:')) return;
+  e.preventDefault(); e.stopPropagation();
+  download(a.href, a.getAttribute('download') || undefined);
+  a.closest('.doc-menu')?.remove();
+});
 function toast(text) {
   const t = document.createElement('div');
   t.className = 'toast'; t.textContent = text;
