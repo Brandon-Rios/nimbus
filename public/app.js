@@ -307,12 +307,13 @@ function renderSide() {
         </button>`).join('') + (sideQuery ? '' : d.sideOrder ? '<button class="side-reset" data-act="side-recent">↺ Sort by recent activity</button>'
           : items.length > 1 ? '<div class="side-hint">Tip: drag chats to arrange them</div>' : '')
         : sideQuery ? '<div class="side-empty">No chats match</div>'
-        : `<div class="side-empty">No bots yet.<br><button class="link" data-act="market">Browse the Marketplace</button> or <button class="link" data-act="new-bot">make one</button>.</div>`}
+        : `<div class="side-empty">No bots yet.<br><button class="link" data-act="market">Browse Connectors</button> or <button class="link" data-act="new-bot">make one</button>.</div>`}
     </div>
     ${sideQuery.length >= 2 ? `<div class="side-hits" id="side-hits"><div class="side-empty">Searching messages…</div></div>` : ''}
     <div class="side-foot">
       ${pending ? `<button class="foot-item" data-act="panel">${ICON.bell}<span>Approvals</span><span class="badge">${pending}</span></button>` : ''}
-      <button class="foot-item" data-act="market">${ICON.grid}<span>Marketplace</span></button>
+      <button class="foot-item" data-act="market">${ICON.grid}<span>Connectors</span></button>
+      <button class="foot-item" data-act="cc-plugins">${ICON.plug}<span>Plugins &amp; skills</span></button>
       <button class="foot-item user" data-act="user-menu"><span class="initial">${esc(userName()[0])}</span><span>${esc(userName())}</span></button>
     </div>`;
 }
@@ -528,7 +529,7 @@ function renderMain() {
         <img class="logo-art" src="/nimbus.webp" alt="Nimbus" width="160" height="160">
         <h2>${none ? 'Build your team' : 'Pick a bot to talk to'}</h2>
         <p>${none ? 'Bots are teammates you hand work to. They run on your computer with Claude Code and ask before anything risky.' : 'Hand off a task. You’ll see each step, and it’ll check with you before sending, paying, deleting or merging.'}</p>
-        ${none ? `<div class="row"><button class="btn primary" data-act="market">${ICON.grid} Browse Marketplace</button><button class="btn" data-act="new-bot">${ICON.plus} New bot</button></div>` : ''}
+        ${none ? `<div class="row"><button class="btn primary" data-act="market">${ICON.grid} Browse Connectors</button><button class="btn" data-act="new-bot">${ICON.plus} New bot</button></div>` : ''}
       </div></div>`;
     return;
   }
@@ -1076,11 +1077,11 @@ async function loadInfo() {
   const conn = r.env ? [
     ...(r.plugins || []).map((p) => `<div class="info-line"><span class="pi" style="background:${esc(p.color || '#666')}">${esc(p.icon || p.name[0])}</span><span>${esc(p.name)}</span><em>plugin</em></div>`),
     ...(r.connectors || []).map((c) => `<div class="info-line"><span class="pi" style="background:${esc(c.color || '#666')}">${esc(c.icon || c.name[0])}</span><span>${esc(c.name)}</span><em class="${c.status === 'connected' ? '' : 'bad'}">${c.status === 'connected' ? '' : esc(c.status)}</em></div>`)
-  ].join('') || '<div class="muted">No connectors. Add some from Plugins.</div>' : '';
+  ].join('') || '<div class="muted">No connectors. Add some from Connectors.</div>' : '';
   el.querySelector('.info-body').innerHTML =
     (r.env ? sec('env', 'Environment', env) : '') +
     sec('ctx', 'Context', r.context ? contextHtml(r.context) : `<div class="muted">${esc(r.error || 'Not available')}</div>`) +
-    (r.env ? sec('conn', 'Connectors', conn + `<button class="btn pill small" data-act="plugins">Manage plugins</button>`) : '');
+    (r.env ? sec('conn', 'Connectors', conn + `<button class="btn pill small" data-act="plugins">Manage connectors</button>`) : '');
 }
 function contextHtml(r) {
   const deferred = (c) => /deferred/i.test(c.name);
@@ -1358,7 +1359,7 @@ async function marketModal(focus = '') {
   });
 }
 
-const marketTabs = (on) => `<div class="m-tabs"><button class="${on === 'conn' ? 'on' : ''}" data-mtab="conn">Bots &amp; connectors</button><button class="${on === 'cc' ? 'on' : ''}" data-mtab="cc">Plugins &amp; skills</button></div>`;
+const marketTabs = (on) => `<div class="m-tabs"><button class="${on === 'conn' ? 'on' : ''}" data-mtab="conn">Connectors</button><button class="${on === 'cc' ? 'on' : ''}" data-mtab="cc">Plugins &amp; skills</button></div>`;
 
 // ---------- plugins & skills: Claude Code plugins from Anthropic's marketplaces, installed server-wide ----------
 async function ccPluginsModal(fresh = false) {
@@ -1463,7 +1464,7 @@ async function botPluginsModal(b, fresh = false) {
   const conns = [...market.connectors.map((c) => ({ ...c, p: known.find((k) => k.connector?.name === c.name) })),
     ...known.filter((k) => !k.connector).map((k) => ({ name: k.name, status: 'not connected', p: k }))];
   const connIcon = (c) => c.p ? pluginIcon(c.p, 34) : `<span class="p-icon" style="width:34px;height:34px;background:#d97757">${esc(c.name[0])}</span>`;
-  const el = modal(`<div class="modal-head"><h2>Plugins</h2><button class="icon-btn" data-close aria-label="Close">${ICON.close}</button></div>
+  const el = modal(`<div class="modal-head"><h2>Connectors</h2><button class="icon-btn" data-close aria-label="Close">${ICON.close}</button></div>
     <p class="muted">Tools ${esc(b.name)} can use. Risky actions (send, delete, pay) still ask you first.</p>
     <h3>Claude connectors</h3>
     <p class="muted">From your Claude account, shared by every bot. Manage them at <a href="https://claude.ai/settings/connectors" target="_blank" rel="noopener">claude.ai/settings/connectors</a>. <button class="link" data-refresh>Refresh</button></p>
@@ -2547,7 +2548,7 @@ document.addEventListener('click', async (e) => {
   const act = t.dataset.act;
   if (act) closePopover();
   switch (act) {
-    case 'new-menu': e.stopPropagation(); return popover(t, [['new-bot', 'New bot', ICON.plus], ['new-room', 'New group chat', ICON.compose], ['market', 'Browse Marketplace', ICON.grid]]);
+    case 'new-menu': e.stopPropagation(); return popover(t, [['new-bot', 'New bot', ICON.plus], ['new-room', 'New group chat', ICON.compose], ['market', 'Browse Connectors', ICON.grid]]);
     case 'claude': return claudeModal();
     case 'docs': return docsModal();
     case 'artifacts': return openArtifacts();
@@ -2561,6 +2562,7 @@ document.addEventListener('click', async (e) => {
     case 'memory': return memoryModal(cur);
     case 'plugins': return botPluginsModal(cur);
     case 'market': $('#side').classList.remove('open'); return marketModal();
+    case 'cc-plugins': $('#side').classList.remove('open'); return ccPluginsModal();
     case 'appearance': return appearanceModal();
     case 'attach': return $('#file-pick').click();
     case 'dictate': return toggleDictation(t);
