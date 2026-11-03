@@ -19,6 +19,11 @@ const ICON = {
   book: svg('<path d="M5 4.5h10a3 3 0 0 1 3 3V20H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h10"/>'),
   plug: svg('<path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4"/>'),
   gear: svg('<circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1.2l2-1.5-2-3.4-2.3.9a7 7 0 0 0-2-1.2L14.2 3h-4l-.4 2.6a7 7 0 0 0-2 1.2l-2.4-.9-2 3.4 2 1.5a7 7 0 0 0 0 2.4l-2 1.5 2 3.4 2.4-.9a7 7 0 0 0 2 1.2l.4 2.6h4l.4-2.6a7 7 0 0 0 2-1.2l2.3.9 2-3.4-2-1.5c.1-.4.1-.8.1-1.2z"/>'),
+  globe: svg('<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>'),
+  file: svg('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>'),
+  folder: svg('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'),
+  download: svg('<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>'),
+  share: svg('<circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="m8.2 10.8 7.6-3.6M8.2 13.2l7.6 3.6"/>'),
   compose: svg('<path d="M12 20h8M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>'),
   bell: svg('<path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15zM10 20a2 2 0 0 0 4 0"/>'),
   dots: svg('<circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/>'),
@@ -68,6 +73,7 @@ document.addEventListener('click', (e) => {
   download(a.href, a.getAttribute('download') || undefined);
   a.closest('.doc-menu')?.remove();
 });
+function copyText(text) { navigator.clipboard?.writeText(text).then(() => toast('Link copied'), () => toast(text)); }
 function toast(text) {
   const t = document.createElement('div');
   t.className = 'toast'; t.textContent = text;
@@ -228,6 +234,13 @@ function timeAgo(sec) {
   const d = Date.now() / 1000 - sec;
   if (d < 60) return 'now'; if (d < 3600) return Math.floor(d / 60) + 'm';
   if (d < 86400) return Math.floor(d / 3600) + 'h'; return Math.floor(d / 86400) + 'd';
+}
+function msgStamp(sec) {
+  if (!sec) return '';
+  const d = new Date(sec * 1000), now = new Date(), y = new Date(now); y.setDate(now.getDate() - 1);
+  const day = d.toDateString() === now.toDateString() ? 'Today' : d.toDateString() === y.toDateString() ? 'Yesterday'
+    : d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric', ...(d.getFullYear() !== now.getFullYear() ? { year: 'numeric' } : {}) });
+  return `<time class="stamp" datetime="${d.toISOString()}" title="${esc(d.toLocaleString([], { dateStyle: 'full', timeStyle: 'short' }))}">${day} ${clock(sec)}</time>`;
 }
 function clock(sec) { return new Date(sec * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
 function whenNext(ms) {
@@ -546,6 +559,8 @@ function renderMain() {
           <button class="icon-btn" data-act="info" title="Chat details: environment, context, connectors" aria-label="Chat details">${ICON.sidebar}</button>
           <button class="icon-btn" data-act="edit-bot" title="Settings" aria-label="Settings">${ICON.gear}</button>`
         : `<button class="icon-btn" data-act="edit-room" title="Settings" aria-label="Settings">${ICON.gear}</button>`}
+        ${isBot ? `<button class="icon-btn" data-act="artifacts" title="Artifacts: everything this bot made" aria-label="Artifacts">${ICON.grid}${artNew[threadKey()] ? `<i class="count hot">${artNew[threadKey()] > 9 ? '9+' : artNew[threadKey()]}</i>` : ''}</button>` : ''}
+        <button class="icon-btn" data-act="files" title="Files in this chat" aria-label="Files">${ICON.folder}</button>
         <button class="icon-btn" data-act="panel" title="Activity" aria-label="Activity">${ICON.bell}${pending ? `<i class="count hot">${pending}</i>` : ''}</button>
       </div>
     </header>
@@ -598,12 +613,24 @@ function renderFiles(m) {
   let files = [];
   try { files = JSON.parse(m.files || '[]'); } catch {}
   if (!files.length) return '';
-  return `<div class="files">${files.map((f) => isImage(f)
+  return `<div class="files">${files.map((f) => isHtml(f)
+    ? `<div class="html-card"><a class="hc-thumb" href="${fileUrl(f)}" data-view="${f.id}" data-doc="${f.doc || ''}" aria-label="Open ${esc(f.name)}"><iframe class="html-thumb" data-src="${fileUrl(f)}?download" sandbox="allow-scripts" tabindex="-1" loading="lazy" title="Preview of ${esc(f.name)}"></iframe></a>
+        <div class="hc-row"><span class="hc-badge">${ICON.globe} Web page</span><span class="hc-name">${esc(f.name)}</span><small>${f.version > 1 ? `v${f.version} · ` : ''}${fmtSize(f.size)}</small>
+        <a class="btn pill small primary" href="${fileUrl(f)}" data-view="${f.id}" data-doc="${f.doc || ''}">Open</a></div></div>`
+    : isImage(f)
     ? `<a class="file-img" href="${fileUrl(f)}" target="_blank" rel="noopener"><img src="${fileUrl(f)}" alt="${esc(f.name)}" loading="lazy"></a>`
-    : f.preview ? `<div class="file-card"><a href="${fileUrl(f.preview)}" target="_blank" rel="noopener"><img src="${fileUrl(f.preview)}" alt="Preview of ${esc(f.name)}" loading="lazy"></a>
-        <div class="fc-row">${ICON.clip}<span>${esc(f.name)}</span><small>${fmtSize(f.size)}</small><a class="btn pill small" href="${fileUrl(f)}" download>Download</a></div></div>`
-        : `<a class="file-chip" href="${fileUrl(f)}" target="_blank" rel="noopener">${ICON.clip}<span>${esc(f.name)}</span><small>${fmtSize(f.size)}</small></a>`).join('')}</div>`;
+    : f.preview ? `<div class="file-card"><a href="${fileUrl(f)}" data-view="${f.id}" data-doc="${f.doc || ''}"><img src="${fileUrl(f.preview)}" alt="Preview of ${esc(f.name)}" loading="lazy"></a>
+        <div class="fc-row">${ICON.file}<span>${esc(f.name)}</span><small>${f.version > 1 ? `v${f.version} · ` : ''}${fmtSize(f.size)}</small><a class="btn pill small" href="${fileUrl(f)}" data-view="${f.id}" data-doc="${f.doc || ''}">Open</a></div></div>`
+        : `<a class="file-chip" href="${fileUrl(f)}" data-view="${f.id}" data-doc="${f.doc || ''}">${ICON.file}<span>${esc(f.name)}</span><small>${f.version > 1 ? `v${f.version} · ` : ''}${fmtSize(f.size)}</small></a>`).join('')}</div>`;
 }
+const isHtml = (f) => /\.html?$/i.test(f.name) || f.type === 'text/html';
+// Live mini preview of a web page a bot made: fetched once, shown scaled down in a script-only sandbox (no access to Nimbus).
+new MutationObserver(() => {
+  for (const fr of document.querySelectorAll('iframe.html-thumb:not([data-loaded])')) {
+    fr.dataset.loaded = '1';
+    fetch(fr.dataset.src).then((r) => r.ok ? r.text() : '').then((html) => { fr.srcdoc = html.slice(0, 2_000_000); }).catch(() => {});
+  }
+}).observe(document.documentElement, { childList: true, subtree: true });
 function fmtSize(n) { return n < 1024 ? n + ' B' : n < 1048576 ? Math.round(n / 1024) + ' KB' : (n / 1048576).toFixed(1) + ' MB'; }
 
 // ---------- right-click (or long-press) a message: redact ----------
@@ -784,15 +811,22 @@ function clearAttachments() {
 }
 
 function renderMessage(m, prev) {
-  if (m.author === 'user') return `<div class="msg user" data-mid="${m.id}">${renderFiles(m)}${m.body ? `<div class="bubble">${esc(m.body)}</div>` : ''}
-    ${m.body ? `<div class="msg-actions"><button data-copy="${m.id}" title="Copy">Copy</button><button data-edit="${m.id}" title="Edit and resend">Edit</button><button data-retry="${m.id}" title="Send again">Retry</button></div>` : ''}</div>`;
-  if (m.kind === 'note') return `<div class="note" data-mid="${m.id}">${esc(m.body)}</div>`;
+  if (m.author === 'user') return `<div class="msg user" data-mid="${m.id}">${renderFiles(m)}${m.body ? `<div class="bubble">${esc(m.body)}</div>` : ''}${msgStamp(m.created_at)}
+    ${m.queued ? `<div class="queued-tag">Queued · waits for the current task</div><div class="msg-actions show"><button data-qedit="${m.id}">Edit</button><button data-qcancel="${m.id}">Cancel</button></div>` : m.body ? `<div class="msg-actions"><button data-copy="${m.id}" title="Copy">Copy</button><button data-edit="${m.id}" title="Edit and resend">Edit</button><button data-retry="${m.id}" title="Send again">Retry</button></div>` : ''}</div>`;
+  if (m.kind === 'note') return `<div class="note" data-mid="${m.id}">${esc(m.body)}${renderFiles(m)}</div>`;
   if (m.kind === 'quiet') return `<div class="note quiet-ok" data-mid="${m.id}" title="Quiet check at ${clock(m.created_at)}">✓ All clear · ${esc(m.body)} <span class="muted">· ${clock(m.created_at)}</span></div>`;
   const b = bot(m.author) || { name: 'Deleted bot', color: '#555' };
   if (m.kind === 'trace') return renderTrace(m, prev);
   if (m.kind === 'approval') return renderApproval(m, b, prev);
+  if (m.kind === 'docuse') {
+    let u = {}; try { u = JSON.parse(m.body); } catch {}
+    const names = { read: 'Read doc', edit: 'Edit doc', comment: 'Comment on doc', image: 'Add picture to doc' };
+    const docs = u.docs || [];
+    return `<div class="msg bot" data-mid="${m.id}">${speakerLabel(m, prev)}<details class="docuse"><summary>Used Docs · ${docs.map((d) => esc(d.title)).join(', ')} ${ICON.chevron}</summary>
+      <div class="docuse-acts">${docs.map((d) => d.acts.map((a) => `<button class="docuse-act" data-doc-open="${esc(d.id)}">${names[a] || esc(a)}${docs.length > 1 ? ` · <span class="muted">${esc(d.title)}</span>` : ''} <span class="go">›</span></button>`).join('')).join('')}</div></details></div>`;
+  }
   if (m.kind === 'doc') { let d = {}; try { d = JSON.parse(m.body); } catch {} return `<div class="msg bot" data-mid="${m.id}">${speakerLabel(m, prev)}<button class="doc-card" data-doc-open="${esc(d.docId || '')}"><span class="dc-ico">📄</span><span><b>${esc(d.title || 'Document')}</b><small>Live document · click to open</small></span><span class="dc-open">Open</span></button></div>`; }
-  return `<div class="msg bot ${m.kind === 'error' ? 'error' : ''}" data-mid="${m.id}" title="${clock(m.created_at)}">${speakerLabel(m, prev)}<div class="bubble md">${md(m.body)}</div>
+  return `<div class="msg bot ${m.kind === 'error' ? 'error' : ''}" data-mid="${m.id}" title="${clock(m.created_at)}">${speakerLabel(m, prev)}${m.body ? `<div class="bubble md">${md(m.body)}</div>` : ''}${renderFiles(m)}${msgStamp(m.created_at)}
     <div class="msg-actions"><button data-copy="${m.id}">Copy</button>${m.kind === 'error' ? '<button data-continue="1">Try again</button>' : `<button data-speak="${m.id}">▶ Read aloud</button><button data-continue="1">Continue</button>`}</div></div>`;
 }
 
@@ -897,6 +931,7 @@ function connect() {
   const es = new EventSource('/api/events');
   es.addEventListener('message', (e) => {
     const m = JSON.parse(e.data);
+    if (m.thread === threadKey() && m.author !== 'user' && isArtifactMsg(m) && !S.messages.some((x) => x.id === m.id)) artifactAdded();
     if (m.thread === threadKey() && !S.messages.some((x) => x.id === m.id)) {
       const prev = S.messages[S.messages.length - 1];
       S.messages.push(m);
@@ -912,6 +947,11 @@ function connect() {
     }
     if (m.kind === 'approval' && m.author !== 'user') notify(m);
     soon();
+  });
+  es.addEventListener('message_delete', (e) => {
+    const { id } = JSON.parse(e.data);
+    S.messages = S.messages.filter((x) => x.id !== id);
+    document.querySelector(`#thread [data-mid="${id}"]`)?.remove();
   });
   es.addEventListener('message_update', (e) => {
     const m = JSON.parse(e.data);
@@ -930,6 +970,7 @@ function connect() {
   let pending;
   const soon = () => { clearTimeout(pending); pending = setTimeout(async () => { await refreshState(); if (S.current) updateHeaderBits(); }, 150); };
   for (const ev of ['bot_status', 'state_changed', 'approvals_changed']) es.addEventListener(ev, soon);
+  es.addEventListener('docs_changed', () => fileDocsChanged());
   es.addEventListener('doc_changed', (e) => {
     const m = JSON.parse(e.data);
     if (m.id !== DOC.id) return;
@@ -1085,7 +1126,7 @@ function botModal(b) {
     <label class="field">Instructions<textarea id="f-instr" rows="6" placeholder="What this bot is for, how it should work, what tools or folders to use…">${esc(b.instructions)}</textarea></label>
     <div class="two">
       <label class="field">Effort<select id="f-effort">${EFFORTS.map(([v, l]) => `<option value="${v}" ${b.effort === v ? 'selected' : ''}>${l}</option>`).join('')}</select><span class="hint">Lower effort uses less of your plan.</span></label>
-      <label class="field">Model<input id="f-model" value="${esc(b.model)}" placeholder="Default"><span class="hint">Optional, e.g. sonnet or opus.</span></label>
+      <label class="field">Model<select id="f-model"><option value="">Default</option>${b.model ? `<option value="${esc(b.model)}" selected>${esc(b.model)}</option>` : ''}</select><span class="hint" id="f-model-hint">Loading models on your plan…</span></label>
     </div>
     <label class="toggle-row"><span class="p-icon" style="width:34px;height:34px;background:#2a3a6b">${ICON.monitor}</span>
       <span class="m-text"><b>Own computer</b><span>${S.data.computers ? 'Works on its own desktop on your computer VM, with its own browser and sign-ins.' : 'Set up the computer VM first in Server settings (see deploy/computer/README.md).'}</span></span>
@@ -1116,6 +1157,16 @@ function botModal(b) {
       <svg viewBox="0 0 14 14" width="30" height="30" shape-rendering="crispEdges">${critter(color, { ...look, [key]: v })}</svg></button>`).join('');
   };
   preview();
+  // Fill the model dropdown with what your Claude plan offers; keep a saved model even if it's not listed.
+  api('/api/models').then((r) => {
+    const sel = $('#f-model', el), hint = $('#f-model-hint', el);
+    if (!r?.ok) { hint.textContent = `Couldn’t load models (${r?.error || 'unknown error'}); Default is used.`; return; }
+    const known = new Set(r.models.map((m) => m.id));
+    sel.innerHTML = `<option value="">Default</option>${b.model && !known.has(b.model) ? `<option value="${esc(b.model)}">${esc(b.model)}</option>` : ''}`
+      + r.models.map((m) => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join('');
+    sel.value = b.model || '';
+    hint.textContent = 'Models available on your Claude plan.';
+  }).catch((e) => { $('#f-model-hint', el).textContent = `Couldn’t load models (${e.message}); Default is used.`; });
   el.addEventListener('input', (e) => { if (e.target.id === 'f-color') setColor(e.target.value); });
   el.addEventListener('click', async (e) => {
     const sw = e.target.closest('[data-color]');
@@ -1262,7 +1313,7 @@ function pluginIcon(p, size = 40) {
   return `<span class="p-icon" style="width:${size}px;height:${size}px;background:${esc(p.color)};font-size:${Math.round(size * (p.icon.length > 1 ? 0.34 : 0.46))}px">${esc(p.icon)}</span>`;
 }
 async function marketModal(focus = '') {
-  const el = modal(`<div class="market-top">
+  const el = modal(`<div class="market-top">${marketTabs('conn')}
       <label class="search big">${ICON.search}<input id="mk-q" placeholder="Search plugins and bots" autocomplete="off"></label>
       <button class="icon-btn" data-close aria-label="Close">${ICON.close}</button>
     </div><div class="market-body" id="mk-body"><div class="muted">Loading…</div></div>`, { wide: true, cls: 'market' });
@@ -1293,6 +1344,7 @@ async function marketModal(focus = '') {
   el.addEventListener('click', async (e) => {
     const t = e.target.closest('button'); if (!t) return;
     if (t.dataset.close !== undefined) return closeModal();
+    if (t.dataset.mtab === 'cc') return ccPluginsModal();
     try {
       if (t.dataset.addBot) {
         const saved = await api(`/api/templates/${t.dataset.addBot}/add`, { method: 'POST' });
@@ -1306,6 +1358,61 @@ async function marketModal(focus = '') {
   });
 }
 
+const marketTabs = (on) => `<div class="m-tabs"><button class="${on === 'conn' ? 'on' : ''}" data-mtab="conn">Bots &amp; connectors</button><button class="${on === 'cc' ? 'on' : ''}" data-mtab="cc">Plugins &amp; skills</button></div>`;
+
+// ---------- plugins & skills: Claude Code plugins from Anthropic's marketplaces, installed server-wide ----------
+async function ccPluginsModal(fresh = false) {
+  const el = modal(`<div class="market-top">${marketTabs('cc')}
+      <label class="search big">${ICON.search}<input id="cc-q" placeholder="Search plugins and skills" autocomplete="off"></label>
+      <button class="icon-btn" data-close aria-label="Close">${ICON.close}</button>
+    </div><div class="market-body" id="cc-body"><div class="muted">Loading the plugin catalog…</div></div>`, { wide: true, cls: 'market' });
+  let data;
+  try { data = await api('/api/cc-plugins' + (fresh ? '?fresh=1' : '')); } catch (err) { $('#cc-body', el).innerHTML = `<div class="muted">${esc(err.message)}</div>`; return; }
+  let query = '', busy = '';
+  const initials = (n) => n.split(/[-_\s]+/).map((w) => w[0] || '').join('').slice(0, 2).toUpperCase();
+  const hue = (n) => [...n].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 0);
+  const icon = (n) => `<span class="p-icon" style="width:40px;height:40px;background:hsl(${hue(n)} 45% 42%);font-size:14px">${esc(initials(n))}</span>`;
+  const pretty = (n) => n.replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  const row = (p, btn) => `<div class="m-row">${icon(p.name)}<div class="m-text"><b>${esc(pretty(p.name))}${p.version ? ` <small class="muted">${esc(p.version)}</small>` : ''}</b><span>${esc(p.description || '')}</span></div>${btn}</div>`;
+  const section = (title, html, note = '') => html ? `<section><h3>${title}</h3>${note}<div class="m-grid">${html}</div></section>` : '';
+  const draw = () => {
+    const match = (p) => !query || `${p.name} ${p.description}`.toLowerCase().includes(query);
+    const have = new Set(data.installed.map((p) => p.id));
+    const btn = (p) => busy === p.id ? '<button class="btn pill" disabled>Working…</button>'
+      : have.has(p.id) ? (data.canInstall ? `<button class="btn pill ghost" data-uninstall="${esc(p.id)}">Installed</button>` : '<span class="pill-ok">Installed</span>')
+      : data.canInstall ? `<button class="btn pill" data-install="${esc(p.id)}">Install</button>` : '';
+    const skills = data.skills.filter(match), inst = data.installed.filter(match);
+    // Anthropic's own catalog first, then most-installed; cap the list so the dialog stays quick.
+    const avail = data.available.filter((p) => !have.has(p.id) && match(p))
+      .sort((a, b) => (a.marketplace === 'claude-plugins-official') - (b.marketplace === 'claude-plugins-official') || b.installs - a.installs);
+    const shown = avail.slice(0, query ? 150 : 60);
+    $('#cc-body', el).innerHTML =
+      `<p class="muted">Plugins add skills, commands and tools to <b>every bot</b>. Each one uses some of every bot’s context, so add only what the team uses.<button class="link" data-refresh>Refresh</button></p>`
+      + section('Synced skills', skills.map((k) => row(k, '<span class="pill-ok">On</span>')).join(''))
+      + section('Installed plugins', inst.map((p) => row(p, btn(p))).join(''))
+      + section(query ? `Results (${avail.length}${avail.length > shown.length ? `, showing ${shown.length}` : ''})` : `Discover (${avail.length.toLocaleString()} plugins; search to find more)`, shown.map((p) => row(p, btn(p))).join(''))
+      + (!skills.length && !inst.length && !shown.length ? '<div class="empty small">Nothing matches that search.</div>' : '');
+  };
+  draw();
+  let tmr;
+  $('#cc-q', el).addEventListener('input', (e) => { clearTimeout(tmr); tmr = setTimeout(() => { query = e.target.value.trim().toLowerCase(); draw(); }, 150); });
+  el.addEventListener('click', async (e) => {
+    const t = e.target.closest('button'); if (!t) return;
+    if (t.dataset.close !== undefined) return closeModal();
+    if (t.dataset.mtab === 'conn') return marketModal();
+    if (t.dataset.refresh !== undefined) return ccPluginsModal(true);
+    const id = t.dataset.install || t.dataset.uninstall; if (!id || busy) return;
+    const install = !!t.dataset.install;
+    if (!install && !confirm(`Remove ${id.split('@')[0]} from every bot?`)) return;
+    busy = id; draw();
+    try {
+      await api(`/api/cc-plugins/${install ? 'install' : 'uninstall'}`, { method: 'POST', body: { id } });
+      data = await api('/api/cc-plugins?fresh=1');
+      toast(install ? `${id.split('@')[0]} installed. Bots get it from their next task.` : `${id.split('@')[0]} removed`);
+    } catch (err) { toast(err.message); }
+    busy = ''; draw();
+  });
+}
 function connectModal(p) {
   const el = modal(`<div class="modal-head"><div class="ph">${pluginIcon(p, 44)}<h2>${esc(p.name)}</h2></div><button class="icon-btn" data-close aria-label="Close">${ICON.close}</button></div>
     <p>${esc(p.desc)}</p>
@@ -1471,7 +1578,7 @@ async function activityLogModal() {
     const byRun = {};
     for (const a of approvals) (byRun[a.run_id] ||= []).push(a);
     const src = (r) => r.parent_run ? 'from another bot' : r.thread.startsWith('room:') ? 'group chat' : /^\(Scheduled/.test(r.prompt) ? 'routine' : 'you';
-    const icon = { done: '✓', error: '✗', stopped: '■', interrupted: '⚠', running: '…', queued: '…' };
+    const icon = { done: '✓', error: '✗', stopped: '■', interrupted: '⚠', running: '…', queued: '…', merged: '↪' };
     $('#log-body', el).innerHTML = runs.length ? `<div class="log">${runs.map((r) => {
       const b = bot(r.bot_id), secs = r.ended_at && r.started_at ? r.ended_at - r.started_at : null;
       return `<div class="log-row ${r.status}"><span class="li">${icon[r.status] || '·'}</span>${avatar(b, 22)}
@@ -1507,6 +1614,8 @@ async function serverModal() {
     <label class="field">Token secret<input id="s-pve_token_secret" ${secret('pve_token_secret')}></label>
     <div class="update-box"><button class="btn small" data-update>Update computers</button><span class="muted" id="upd-status">Rebuilds them with the latest Claude Code and Chromium. Files, browsers and sign-ins are kept; computers restart.</span></div>
     <h3>Chats</h3>
+    <label class="field">Trusted bots<input id="s-trusted_bots" value="${esc(v.trusted_bots || '')}" placeholder="3"><span class="hint">Bot numbers allowed to read Nimbus’s private data and change its code (e.g. Nimbus Manager). Other bots can’t touch data/, .env or Nimbus’s files; their own folder, uploads and data/shared stay open.</span></label>
+    <label class="field">Bot sandbox<input id="s-sandbox" value="${esc(v.sandbox || '')}" placeholder="off"><span class="hint"><code>off</code>, <code>all</code>, bot numbers like <code>5,9</code>, or <code>all,-3</code> for every bot except #3. Sandboxed bots only see their own folder and Nimbus’s tools; the rest of the home folder (keys, ~/.ssh, other bots) is hidden. Needs bubblewrap: <code>apt install bubblewrap</code>. Bots on bot computers aren’t affected.</span></label>
     <label class="field">Auto-compact at (% of context)<input id="s-auto_compact_pct" type="number" min="0" max="95" value="${esc(v.auto_compact_pct || '20')}"><span class="hint">When a chat’s context passes this, Nimbus compacts it between messages. 0 turns it off. You can also type <code>/compact</code> in any chat.</span></label>
     <h3>Backups</h3>
     <p class="muted">Every night at 3:15 Nimbus saves an encrypted copy of all bots, chats, memories and settings (last 14 kept on this server).
@@ -1706,11 +1815,13 @@ async function decide(id, decision, extra = {}) {
   catch (e) { toast(e.message); }
 }
 
-// ---------- live documents (block editor) ----------
-// A document is a list of blocks with stable ids. Click a block to edit it; bots edit through operations
-// and you see their changes appear live. If a bot changes the block you're editing, you choose whose text
-// to keep. Comments anchor to a block and the quoted words.
-const DOC = { id: null, d: null, editing: null, panel: '', flash: new Set() };
+// ---------- live documents (in-page editor) ----------
+// A document is a list of blocks with stable ids (see docs.js). You type straight into the page: each block is
+// editable in place and saves itself (as Markdown, guarded by the hash you started from) a moment after you stop
+// typing or when you click away. Bots edit through operations and you see their changes appear live; if a bot
+// changes the block you're typing in, you choose whose text to keep. Comments anchor to a block and the quoted
+// words. Tabs are <!-- tab: Name --> marker blocks; pictures are image blocks.
+const DOC = { id: null, d: null, editing: null, hash: null, dirty: false, cur: null, panel: '', flash: new Set(), tab: 0, timer: null, q: Promise.resolve(), focusNext: null, rendering: false };
 const docInline = (t) => esc(t)
   .replace(/`([^`]+)`/g, '<code>$1</code>')
   .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
@@ -1726,14 +1837,16 @@ function docBlockMd(b) {
     case 'chart': return '```chart\n' + b.md + '\n```';
     case 'divider': return '---';
     case 'pending': return `<!-- pending: ${a.intent || ''} -->`;
+    case 'tab': return `<!-- tab: ${a.title || 'Tab'} -->`;
     default: return b.md;
   }
 }
+const CE = 'contenteditable="true" spellcheck="true"';
 function docTable(src) {
   const rows = src.split('\n').filter((l) => l.trim() && !/^\s*\|?\s*:?-{2,}/.test(l)).map((l) => l.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim()));
   if (!rows.length) return '';
   const [head, ...body] = rows;
-  return `<div class="dt-wrap"><table><thead><tr>${head.map((c) => `<th>${docInline(c)}</th>`).join('')}</tr></thead><tbody>${body.map((r) => `<tr>${r.map((c) => `<td>${docInline(c)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+  return `<div class="dt-wrap"><table class="ed-table"><thead><tr>${head.map((c) => `<th ${CE} class="ed">${docInline(c)}</th>`).join('')}</tr></thead><tbody>${body.map((r) => `<tr>${head.map((_, i) => `<td ${CE} class="ed">${docInline(r[i] || '')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
 }
 function docChart(svg) {
   // A sandboxed frame with no scripts and no network: the chart can't reach the app or the internet.
@@ -1742,6 +1855,8 @@ function docChart(svg) {
   const html = `<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:"><style>html,body{margin:0;height:100%;background:#fff}svg{width:100%;height:100%;display:block}</style>${svg}`;
   return `<iframe class="doc-chart" sandbox="" referrerpolicy="no-referrer" style="aspect-ratio:${ratio}" srcdoc="${esc(html)}" title="Chart"></iframe>`;
 }
+// Only pictures stored with the doc (or https links) are shown.
+const docImgOk = (u) => /^\/api\/docs\/d_[0-9a-f]+\/img\/[\w-]+\.(png|jpe?g|gif|webp)$/i.test(u) || /^https:\/\/\S+$/i.test(u);
 function docMarkQuotes(html, b) {
   const cms = (DOC.d?.comments || []).filter((c) => c.block_id === b.id && !c.resolved && !c.parent && c.quote && !c.detached);
   for (const c of cms) { const q = esc(c.quote); const i = html.indexOf(q); if (i >= 0) html = html.slice(0, i) + `<mark class="cm" data-cm="${c.id}">${q}</mark>` + html.slice(i + q.length); }
@@ -1749,39 +1864,118 @@ function docMarkQuotes(html, b) {
 }
 function docBlockHtml(b) {
   const a = b.attrs || {};
-  const list = (tag, re) => `<${tag}>${b.md.split('\n').filter((l) => l.trim()).map((l) => `<li style="margin-left:${Math.min(4, Math.floor((l.match(/^\s*/)[0].length) / 2)) * 1.4}em">${docInline(l.replace(re, ''))}</li>`).join('')}</${tag}>`;
+  const items = (re) => b.md.split('\n').filter((l) => l.trim()).map((l) => `<li data-ind="${Math.min(4, Math.floor(l.match(/^\s*/)[0].length / 2))}">${docInline(l.replace(re, ''))}</li>`).join('');
   let h;
   switch (b.type) {
-    case 'heading': h = `<h${Math.min(4, a.level || 2)}>${docInline(b.md)}</h${Math.min(4, a.level || 2)}>`; break;
-    case 'bullets': h = list('ul', /^\s*[-*+] /); break;
-    case 'numbered': h = list('ol', /^\s*\d+[.)] /); break;
-    case 'todo': h = `<ul class="todo">${b.md.split('\n').filter((l) => l.trim()).map((l, i) => { const done = /\[[xX]\]/.test(l); return `<li class="${done ? 'done' : ''}"><input type="checkbox" data-todo="${i}" ${done ? 'checked' : ''}><span>${docInline(l.replace(/^\s*[-*+] \[[ xX]\] /, ''))}</span></li>`; }).join('')}</ul>`; break;
-    case 'quote': h = `<blockquote>${docInline(b.md).replace(/\n/g, '<br>')}</blockquote>`; break;
-    case 'code': h = `<pre><code>${esc(b.md)}</code></pre>`; break;
+    case 'heading': { const n = Math.min(4, a.level || 2); h = `<h${n} class="ed" ${CE} data-ph="Heading">${docInline(b.md)}</h${n}>`; break; }
+    case 'bullets': h = `<ul class="ed" ${CE}>${items(/^\s*[-*+] /)}</ul>`; break;
+    case 'numbered': h = `<ol class="ed" ${CE}>${items(/^\s*\d+[.)] /)}</ol>`; break;
+    case 'todo': h = `<ul class="todo ed" ${CE}>${b.md.split('\n').filter((l) => l.trim()).map((l) => { const done = /\[[xX]\]/.test(l); return `<li class="${done ? 'done' : ''}"><input type="checkbox" contenteditable="false" data-todo ${done ? 'checked' : ''}><span>${docInline(l.replace(/^\s*[-*+] \[[ xX]\] ?/, '')) || '<br>'}</span></li>`; }).join('')}</ul>`; break;
+    case 'quote': h = `<blockquote class="ed" ${CE}>${docInline(b.md).replace(/\n/g, '<br>')}</blockquote>`; break;
+    case 'code': h = `<pre class="ed" ${CE} spellcheck="false"><code>${esc(b.md)}</code></pre>`; break;
     case 'table': h = docTable(b.md); break;
     case 'divider': h = '<hr>'; break;
     case 'chart': h = docChart(b.md); break;
+    case 'image': { const m = b.md.match(/^!\[([^\]]*)\]\(([^)\s]+)\)/); h = m && docImgOk(m[2]) ? `<figure class="doc-img"><img src="${esc(m[2])}" alt="${esc(m[1])}" loading="lazy"></figure>` : `<p class="muted">${esc(b.md)}</p>`; break; }
     case 'pending': h = `<div class="pending"><span class="shimmer">${esc(a.intent || 'Writing…')}</span><i></i><i></i><i></i></div>`; break;
-    default: h = `<p>${docInline(b.md).replace(/\n/g, '<br>')}</p>`;
+    default: h = `<p class="ed" ${CE} data-ph="Type something…">${docInline(b.md).replace(/\n/g, '<br>')}</p>`;
   }
   const n = (DOC.d?.comments || []).filter((c) => c.block_id === b.id && !c.resolved).length;
   return `<div class="blk ${b.type} ${DOC.flash.has(b.id) ? 'flash' : ''}" data-bid="${b.id}">
-    <div class="blk-gutter"><button class="blk-btn" data-blk-add title="Add a block below">+</button><button class="blk-btn" data-blk-menu title="More">⋮</button></div>
+    <div class="blk-gutter" contenteditable="false"><button class="blk-btn" data-blk-add title="Add a line below">+</button><button class="blk-btn" data-blk-menu title="More">⋮</button></div>
     <div class="blk-body">${docMarkQuotes(h, b)}</div>${n ? `<button class="blk-cm" data-blk-comments title="Comments">💬 ${n}</button>` : ''}</div>`;
 }
+
+// ---------- page → Markdown ----------
+const mdWrap = (m, s) => { if (!s.trim()) return s; const [, l, mid, r] = s.match(/^(\s*)([\s\S]*?)(\s*)$/); return l + m + mid + m + r; };
+function inlineMd(node) {
+  let out = '';
+  for (const n of node.childNodes) {
+    if (n.nodeType === 3) { out += n.nodeValue.replace(/\u00a0/g, ' ').replace(/\u200b/g, ''); continue; }
+    if (n.nodeType !== 1) continue;
+    const t = n.tagName;
+    if (t === 'BR') out += '\n';
+    else if (t === 'INPUT' || n.matches('.blk-conflict')) continue;
+    else if (t === 'B' || t === 'STRONG' || (t === 'SPAN' && /bold|[6-9]00/.test(n.style.fontWeight))) out += mdWrap('**', inlineMd(n));
+    else if (t === 'I' || t === 'EM') out += mdWrap('*', inlineMd(n));
+    else if (t === 'S' || t === 'STRIKE' || t === 'DEL') out += mdWrap('~~', inlineMd(n));
+    else if (t === 'CODE') out += n.textContent ? '`' + n.textContent.replace(/`/g, "'") + '`' : '';
+    else if (t === 'A') { const href = n.getAttribute('href') || ''; out += /^https?:/.test(href) ? `[${inlineMd(n)}](${href})` : inlineMd(n); }
+    else if (t === 'DIV' || t === 'P' || t === 'LI') { if (out && !out.endsWith('\n')) out += '\n'; out += inlineMd(n) + '\n'; }
+    else out += inlineMd(n);
+  }
+  return out;
+}
+const oneLine = (s) => s.replace(/\s*\n\s*/g, ' ').trim();
+// The Markdown for one block as it is on the page now.
+function blockMdFromDom(blk, b) {
+  const el = blk.querySelector('.ed, .ed-table');
+  if (!el) return docBlockMd(b);
+  const a = b.attrs || {};
+  const lis = () => [...el.children].filter((x) => x.tagName === 'LI');
+  switch (b.type) {
+    case 'heading': {
+      const [first, ...rest] = inlineMd(el).replace(/\n+$/, '').split('\n');
+      return first.trim() ? ['#'.repeat(a.level || 2) + ' ' + first.trim(), ...rest.filter((l) => l.trim())].join('\n\n') : rest.join('\n').trim();
+    }
+    case 'bullets': case 'numbered':
+      return lis().map((li) => [li, oneLine(inlineMd(li))]).filter(([, t]) => t).map(([li, t], i) => '  '.repeat(Number(li.dataset.ind) || 0) + (b.type === 'numbered' ? `${i + 1}. ` : '- ') + t).join('\n');
+    case 'todo':
+      return lis().map((li) => [li, oneLine(inlineMd(li))]).filter(([, t]) => t).map(([li, t]) => `- [${li.querySelector('input')?.checked ? 'x' : ' '}] ${t}`).join('\n');
+    case 'quote': { const t = inlineMd(el).replace(/\n+$/, '').trim(); return t ? t.split('\n').map((l) => '> ' + l).join('\n') : ''; }
+    case 'code': return '```' + (a.lang || '') + '\n' + el.textContent.replace(/\n$/, '') + '\n```';
+    case 'table': {
+      const rows = [...el.querySelectorAll('tr')].map((tr) => [...tr.children].map((c) => oneLine(inlineMd(c)).replace(/\|/g, '/')));
+      if (!rows.length) return '';
+      const row = (r) => '| ' + r.map((c) => c || ' ').join(' | ') + ' |';
+      return [row(rows[0]), '|' + rows[0].map(() => '---').join('|') + '|', ...rows.slice(1).map(row)].join('\n');
+    }
+    default: return inlineMd(el).replace(/\n+$/, '').trim();
+  }
+}
+
+// ---------- tabs ----------
+function docTabs(d) {
+  const tabs = [];
+  let cur = { title: null, marker: null, blocks: [] };
+  for (const b of d.blocks) {
+    if (b.type === 'tab') { if (cur.marker || cur.blocks.length) tabs.push(cur); cur = { title: b.attrs?.title || 'Tab', marker: b, blocks: [] }; }
+    else cur.blocks.push(b);
+  }
+  tabs.push(cur);
+  tabs.forEach((t, i) => { t.title ??= 'Tab ' + (i + 1); });
+  return tabs;
+}
+const curTab = () => { const tabs = docTabs(DOC.d); DOC.tab = Math.max(0, Math.min(DOC.tab, tabs.length - 1)); return tabs[DOC.tab]; };
+// Where "add at the end" goes in the tab you're looking at.
+function tabEndTarget() {
+  const t = curTab(), last = t.blocks[t.blocks.length - 1] || t.marker;
+  return last ? { target: { blocks: [last.id] }, side: 'after' } : { target: { at: 'start' }, side: 'before' };
+}
+
+// ---------- rendering ----------
+const TB = (k, label, title) => `<button class="tb-btn" data-tb="${k}" title="${title}" aria-label="${title}">${label}</button>`;
 function renderDoc() {
   const el = $('#docpane'), d = DOC.d;
   if (!d) return;
-  const editingEl = DOC.editing && el.querySelector(`.blk[data-bid="${DOC.editing}"] textarea, .blk-new textarea`);
-  const keep = editingEl ? { id: DOC.editing, value: editingEl.value, start: editingEl.selectionStart } : null;
+  // Keep the block you're typing in exactly as it is (text and cursor), unless someone else changed it and you
+  // haven't typed yet.
+  const fresh = d.blocks.find((b) => b.id === DOC.editing);
+  const live = DOC.editing && fresh && (DOC.dirty || fresh.hash === DOC.hash) ? el.querySelector(`.blk[data-bid="${DOC.editing}"]`) : null;
+  const sel = getSelection();
+  const keepSel = live && sel.rangeCount && live.contains(sel.anchorNode) ? [sel.anchorNode, sel.anchorOffset, sel.focusNode, sel.focusOffset] : null;
+  const refocus = !live && DOC.editing && document.activeElement?.closest?.(`.blk[data-bid="${DOC.editing}"]`) ? DOC.editing : null;
   const scroll = el.querySelector('.doc-scroll')?.scrollTop || 0;
   const created = d.created_at ? new Date(d.created_at * 1000).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) : '';
   const author = d.bot_id ? bot(d.bot_id)?.name : userName();
   const open = (d.comments || []).filter((c) => !c.resolved).length;
+  const tabs = docTabs(d), tab = curTab();
+  DOC.rendering = true;
   el.innerHTML = `
     <div class="doc-head">
       <span class="doc-name">${esc(d.title)}</span>
       <div class="doc-tools">
+        <button class="icon-btn" data-doc-link title="Copy a link to this document" aria-label="Copy link">🔗</button>
         <button class="icon-btn" data-doc-panel="comments" title="Comments" aria-label="Comments">💬${open ? `<i class="count">${open}</i>` : ''}</button>
         <button class="icon-btn" data-doc-panel="history" title="Version history" aria-label="History">${ICON.clock}</button>
         <button class="btn pill small" data-doc-export>Export</button>
@@ -1789,22 +1983,50 @@ function renderDoc() {
         <button class="icon-btn" data-doc-close aria-label="Close">${ICON.close}</button>
       </div>
     </div>
+    <div class="doc-toolbar" data-doc-tb>
+      <div class="doc-tabs">${tabs.map((t, i) => `<button class="doc-tab ${i === DOC.tab ? 'on' : ''}" data-doc-tab="${i}" title="${i === DOC.tab ? 'Rename or delete this tab' : 'Open tab'}">${esc(t.title)}${i === DOC.tab ? ' ▾' : ''}</button>`).join('')}<button class="doc-tab add" data-doc-tab-new title="New tab">+</button></div>
+      <span class="tb-sep"></span>
+      ${TB('style', 'T<small>T</small>', 'Text style')}${TB('bold', '<b>B</b>', 'Bold (Ctrl+B)')}${TB('italic', '<i>I</i>', 'Italic (Ctrl+I)')}${TB('strike', '<s>S</s>', 'Strikethrough')}${TB('code', '&lt;/&gt;', 'Inline code')}${TB('link', '🔗', 'Link (Ctrl+K)')}
+      <span class="tb-sep"></span>
+      ${TB('bullets', '•≡', 'Bulleted list')}${TB('numbered', '1≡', 'Numbered list')}${TB('todo', '☑', 'Checklist')}
+      <span class="tb-sep"></span>
+      ${TB('table', '▦', 'Insert table')}${TB('image', '🖼', 'Insert picture (or paste one)')}${TB('insert', '+ ▾', 'Insert')}
+    </div>
     <div class="doc-main">
       <div class="doc-scroll"><article class="doc">
         <h1 class="doc-title" contenteditable="true" spellcheck="false" data-doc-title>${esc(d.title)}</h1>
-        <div class="doc-meta"><span class="chip">📅 ${esc(created)}</span><span class="chip">@${esc(author || 'You')}</span><span class="muted small">rev ${d.rev}</span></div>
-        ${d.blocks.map(docBlockHtml).join('')}
-        <button class="doc-add-end" data-blk-add-end>+ Add a block</button>
+        <div class="doc-meta"><span class="chip">📅 ${esc(created)}</span><span class="chip">@${esc(author || 'You')}</span>${d.shares?.length ? `<span class="chip" title="${esc(d.shares.map((s) => s.name || s.email).join(', '))}">👥 ${d.shares.length}</span>` : ''}<span class="muted small">rev ${d.rev}</span></div>
+        ${tab.blocks.map(docBlockHtml).join('')}
+        <button class="doc-add-end" data-blk-add-end>${tab.blocks.length ? '+ Add a line' : 'Click to start writing…'}</button>
       </article></div>
       ${DOC.panel ? `<div class="doc-side">${DOC.panel === 'history' ? '<div class="muted">Loading…</div>' : docCommentsHtml()}</div>` : ''}
-    </div>`;
-  el.querySelector('.doc-scroll').scrollTop = scroll;
-  if (DOC.panel === 'history') loadDocHistory();
-  if (keep) {
-    const blk = el.querySelector(`.blk[data-bid="${keep.id}"]`);
-    if (blk) { docEditBlock(blk, keep.value); const ta = blk.querySelector('textarea'); ta.setSelectionRange(keep.start, keep.start); }
+    </div>
+    <input type="file" accept="image/png,image/jpeg,image/gif,image/webp" data-doc-img-input hidden multiple>`;
+  if (live) {
+    const slot = el.querySelector(`.blk[data-bid="${DOC.editing}"]`);
+    if (slot) {
+      slot.replaceWith(live);
+      if (keepSel) { const ed = keepSel[0].parentElement?.closest('[contenteditable="true"]') || live.querySelector('.ed'); ed?.focus({ preventScroll: true }); try { getSelection().setBaseAndExtent(...keepSel); } catch {} }
+    }
   }
+  el.querySelector('.doc-scroll').scrollTop = scroll;
+  DOC.rendering = false;
+  const next = DOC.focusNext || (refocus && { id: refocus, at: 'end' });
+  DOC.focusNext = null;
+  if (next) docFocus(next.id, next.at);
+  if (DOC.panel === 'history') loadDocHistory();
   DOC.flash.clear();
+}
+// Put the cursor at the start or end of a block.
+function docFocus(id, at = 'end') {
+  const ed = $(`#docpane .blk[data-bid="${id}"] .ed`);
+  if (!ed) return;
+  const target = at === 'start' ? ed : ([...ed.querySelectorAll('li > span, li')].pop() || ed);
+  ed.focus({ preventScroll: false });
+  const r = document.createRange();
+  r.selectNodeContents(target); r.collapse(at === 'start');
+  const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+  ed.closest('.blk')?.scrollIntoView({ block: 'nearest' });
 }
 function docCommentsHtml() {
   const cs = DOC.d.comments || [];
@@ -1815,7 +2037,7 @@ function docCommentsHtml() {
       <div class="cm-by"><b>${esc(c.author)}</b> <span class="muted">${timeAgo(c.created_at)}</span></div><div class="cm-body">${docInline(c.body)}</div>
       ${replies(c.id).map((r) => `<div class="cm-reply"><b>${esc(r.author)}</b> ${docInline(r.body)}</div>`).join('')}
       ${c.resolved ? '<div class="muted small">Resolved</div>' : `<div class="cm-actions"><input placeholder="Reply…" data-cm-reply="${c.id}"><button class="btn pill small" data-cm-resolve="${c.id}">Resolve</button></div>`}</div>`;
-  return `<div class="doc-side-head"><b>Comments</b><span class="muted small">Select text in a block, then ⋮ → Comment</span></div>
+  return `<div class="doc-side-head"><b>Comments</b><span class="muted small">Select some text, then ⋮ → Comment</span></div>
     ${roots.length ? roots.sort((a, b) => a.resolved - b.resolved).map(one).join('') : '<div class="muted">No comments yet.</div>'}`;
 }
 async function loadDocHistory() {
@@ -1827,7 +2049,8 @@ async function loadDocHistory() {
     ${v.rev !== DOC.d.rev ? `<button class="btn pill small" data-doc-restore="${v.rev}">Restore</button>` : '<span class="muted small">Current</span>'}</div>`).join('');
 }
 async function openDoc(id) {
-  DOC.id = id; DOC.editing = null;
+  if (DOC.id && DOC.id !== id) await docFlush();
+  DOC.id = id; DOC.editing = null; DOC.dirty = false; DOC.tab = 0; DOC.cur = null;
   closeInfo(); $('#aside').classList.remove('open');
   const el = $('#docpane');
   el.classList.add('open');
@@ -1835,98 +2058,362 @@ async function openDoc(id) {
   try { DOC.d = await api(`/api/docs/${id}`); renderDoc(); }
   catch (e) { toast(e.message); closeDoc(); }
 }
-function closeDoc() { DOC.id = null; DOC.d = null; DOC.editing = null; $('#docpane').classList.remove('open', 'wide'); }
+function closeDoc() {
+  ART.open = false; $('#docpane').onclick = null;
+  if (V.dirty && $('#docpane .html-frame.editing') && !confirm('Discard unsaved HTML changes?')) return;
+  if (DOC.id && DOC.dirty) docFlush();
+  V.code = V.dirty = false; if (ED.ed) stopEditor();
+  V.doc = null; V.fileId = null; DOC.id = null; DOC.d = null; DOC.editing = null; DOC.dirty = false;
+  $('#docpane').classList.remove('open', 'wide');
+}
 async function reloadDoc(flashIds = []) {
   if (!DOC.id) return;
-  const d = await api(`/api/docs/${DOC.id}`).catch(() => null);
-  if (!d || !DOC.id) return;
-  flashIds.forEach((x) => DOC.flash.add(x));
+  const id = DOC.id;
+  const d = await api(`/api/docs/${id}`).catch(() => null);
+  if (!d || DOC.id !== id) return;
+  flashIds.filter((x) => x !== DOC.editing).forEach((x) => DOC.flash.add(x));
   DOC.d = d;
   renderDoc();
 }
 async function docOps(payload) {
-  try { const r = await api(`/api/docs/${DOC.id}/ops`, { method: 'POST', body: payload }); return r; }
+  try { return await api(`/api/docs/${DOC.id}/ops`, { method: 'POST', body: payload }); }
   catch (e) { toast(e.message); throw e; }
 }
-// Edit a block in place as Markdown. Ctrl/Cmd+Enter or clicking away saves; Esc cancels.
-function docEditBlock(blk, value) {
-  const id = blk.dataset.bid, b = DOC.d.blocks.find((x) => x.id === id);
-  if (!b) return;
-  DOC.editing = id;
-  const body = blk.querySelector('.blk-body');
-  body.innerHTML = `<textarea class="blk-edit" spellcheck="true">${esc(value ?? docBlockMd(b))}</textarea><div class="blk-hint muted small">Markdown · Ctrl+Enter to save · Esc to cancel</div>`;
-  blk.classList.add('editing');
-  const ta = body.querySelector('textarea');
-  ta.dataset.hash = b.hash;
-  const fit = () => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 2 + 'px'; };
-  fit(); ta.focus(); ta.addEventListener('input', fit);
-  ta.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') { e.preventDefault(); DOC.editing = null; renderDoc(); }
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); docSaveBlock(blk, ta); }
-  });
-  ta.addEventListener('blur', () => setTimeout(() => { if (DOC.editing === id && document.activeElement !== ta && !blk.querySelector('.blk-conflict')) docSaveBlock(blk, ta); }, 150));
+
+// ---------- saving what you type ----------
+// Saves run one at a time, so a quick second save never trips over the first one's new hash.
+function docSave(blk, force = false) { clearTimeout(DOC.timer); DOC.q = DOC.q.then(() => docSaveNow(blk, force)).catch(() => {}); return DOC.q; }
+const docFlush = () => { const blk = DOC.editing && document.querySelector(`#docpane .blk[data-bid="${DOC.editing}"]`); return blk && DOC.dirty ? docSave(blk) : DOC.q; };
+async function docSaveNow(blk, force) {
+  const id = blk.dataset.bid, b = DOC.d?.blocks.find((x) => x.id === id), docId = DOC.id;
+  if (!b || (!DOC.dirty && !force)) return;
+  const md = blockMdFromDom(blk, b);
+  DOC.dirty = false;
+  if (md === docBlockMd(b)) return;
+  const op = md.trim() ? { op: 'replace', target: { blocks: [id] }, with: { markdown: md } } : { op: 'delete', target: { blocks: [id] } };
+  if (!force) op.ifHash = DOC.editing === id ? DOC.hash : b.hash;
+  const r = await fetch(`/api/docs/${docId}/ops`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ops: [op] }) });
+  const out = await r.json().catch(() => ({}));
+  if (DOC.id !== docId) return;
+  if (r.status === 409) {
+    // Someone (usually a bot) changed this block while you typed. You decide.
+    DOC.dirty = true;
+    blk.querySelector('.blk-conflict')?.remove();
+    blk.querySelector('.blk-body').insertAdjacentHTML('beforeend', `<div class="blk-conflict" contenteditable="false">This changed while you were typing.
+      <button class="btn pill small primary" data-conflict="mine">Keep mine</button><button class="btn pill small" data-conflict="theirs">Use the new version</button></div>`);
+    return;
+  }
+  if (!r.ok) { DOC.dirty = true; return toast(out.error || 'Couldn’t save'); }
+  const mine = out.blocks?.find((x) => x.id === id);
+  if (mine && DOC.editing === id) DOC.hash = mine.hash;
+  // Typing "## " or "- " at the start of a line (or pasting several paragraphs) can turn one block into others:
+  // show the result as the server sees it.
+  const reshaped = !md.trim() || out.created?.length || mine?.type !== b.type;
+  if (reshaped && DOC.editing === id) { DOC.editing = null; DOC.focusNext = { id: out.created?.length ? out.created[out.created.length - 1] : id, at: 'end' }; if (!md.trim()) DOC.focusNext = null; }
+  await reloadDoc();
 }
-async function docSaveBlock(blk, ta, force = false) {
-  const id = blk.dataset.bid, b = DOC.d.blocks.find((x) => x.id === id);
-  const text = ta.value;
-  if (!b || (!force && text === docBlockMd(b))) { DOC.editing = null; return renderDoc(); }
-  const op = text.trim() ? { op: 'replace', target: { blocks: [id] }, with: { markdown: text } } : { op: 'delete', target: { blocks: [id] } };
-  if (!force) op.ifHash = ta.dataset.hash;
+// Replace one block with new content (or several), then put the cursor in the given block.
+async function docReplace(id, withWhat, focus) {
+  await docFlush();
+  const b = DOC.d.blocks.find((x) => x.id === id);
   try {
-    const r = await fetch(`/api/docs/${DOC.id}/ops`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ops: [op] }) });
-    const out = await r.json().catch(() => ({}));
-    if (r.status === 409) {
-      // Someone (usually a bot) changed this block while you typed. You decide.
-      blk.querySelector('.blk-conflict')?.remove();
-      blk.querySelector('.blk-body').insertAdjacentHTML('beforeend', `<div class="blk-conflict">This block changed while you were editing.
-        <button class="btn pill small primary" data-conflict="mine">Keep mine</button><button class="btn pill small" data-conflict="theirs">Use the new version</button></div>`);
+    const r = await docOps({ ops: [{ op: 'replace', target: { blocks: [id] }, ifHash: b?.hash, with: withWhat }] });
+    DOC.editing = null; DOC.dirty = false;
+    if (focus) DOC.focusNext = typeof focus === 'object' ? focus : { id, at: 'end' };
+    await reloadDoc();
+    return r;
+  } catch { reloadDoc(); }
+}
+async function docInsert(where, source, focusAt = 'end') {
+  await docFlush();
+  try {
+    const r = await docOps({ ops: [{ op: 'insert', ...where, source }] });
+    DOC.editing = null; DOC.dirty = false;
+    if (focusAt && r.created?.length) DOC.focusNext = { id: r.created[0], at: focusAt };
+    await reloadDoc();
+    return r;
+  } catch {}
+}
+const afterBlock = (id) => (id ? { target: { blocks: [id] }, side: 'after' } : tabEndTarget());
+const emptyLine = { block: { type: 'paragraph', md: '' } };
+
+document.addEventListener('focusin', (e) => {
+  const ed = e.target.closest?.('#docpane .ed'); if (!ed) return;
+  const blk = ed.closest('.blk'), id = blk.dataset.bid;
+  DOC.cur = id;
+  if (DOC.editing === id) return;
+  const prev = DOC.editing && document.querySelector(`#docpane .blk[data-bid="${DOC.editing}"]`);
+  if (prev && DOC.dirty) docSave(prev);
+  DOC.editing = id; DOC.dirty = false; DOC.hash = DOC.d.blocks.find((b) => b.id === id)?.hash;
+});
+document.addEventListener('focusout', (e) => {
+  const ed = e.target.closest?.('#docpane .ed'); if (!ed || DOC.rendering) return;
+  const blk = ed.closest('.blk');
+  if (e.relatedTarget && blk.contains(e.relatedTarget)) return; // e.g. table cell to table cell
+  setTimeout(() => {
+    if (blk.contains(document.activeElement) || document.activeElement?.closest?.('[data-doc-tb], .doc-menu')) return;
+    if (DOC.dirty && DOC.editing === blk.dataset.bid) docSave(blk);
+    if (DOC.editing === blk.dataset.bid && !DOC.dirty) DOC.editing = null;
+  }, 0);
+});
+document.addEventListener('input', (e) => {
+  const ed = e.target.closest?.('#docpane .ed'); if (!ed) return;
+  const blk = ed.closest('.blk');
+  if (DOC.editing !== blk.dataset.bid) return;
+  DOC.dirty = true;
+  clearTimeout(DOC.timer);
+  DOC.timer = setTimeout(() => docSave(blk), 1200);
+});
+// Enter, Backspace and friends behave like a word processor.
+document.addEventListener('keydown', async (e) => {
+  const ed = e.target.closest?.('#docpane .ed'); if (!ed) return;
+  const blk = ed.closest('.blk'), id = blk.dataset.bid, b = DOC.d.blocks.find((x) => x.id === id);
+  if (!b) return;
+  const mod = e.ctrlKey || e.metaKey;
+  if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); return docLink(); }
+  if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); return docSave(blk); }
+  if (e.key === 'Escape') { ed.blur(); return; }
+  const sel = getSelection(), empty = !ed.textContent.trim();
+  if (e.key === 'Tab' && b.type === 'code') { e.preventDefault(); return document.execCommand('insertText', false, '  '); }
+  if (e.key === 'Tab' && (b.type === 'bullets' || b.type === 'numbered')) {
+    e.preventDefault();
+    const li = sel.anchorNode?.parentElement?.closest('li') || (sel.anchorNode?.nodeName === 'LI' ? sel.anchorNode : null);
+    if (li) { li.dataset.ind = Math.max(0, Math.min(4, (Number(li.dataset.ind) || 0) + (e.shiftKey ? -1 : 1))); DOC.dirty = true; docSave(blk); }
+    return;
+  }
+  if (e.key === 'Backspace' && empty && ['paragraph', 'heading', 'quote'].includes(b.type)) {
+    e.preventDefault();
+    const list = curTab().blocks, i = list.findIndex((x) => x.id === id), prev = list.slice(0, i).reverse().find((x) => /^(paragraph|heading|bullets|numbered|todo|quote|code)$/.test(x.type));
+    DOC.editing = null; DOC.dirty = false;
+    await docOps({ ops: [{ op: 'delete', target: { blocks: [id] } }] }).catch(() => {});
+    if (prev) DOC.focusNext = { id: prev.id, at: 'end' };
+    return reloadDoc();
+  }
+  if (e.key !== 'Enter' || mod) return;
+  if (b.type === 'table') { e.preventDefault(); return; }
+  if (b.type === 'code') { e.preventDefault(); return document.execCommand('insertText', false, '\n'); }
+  if (e.shiftKey || b.type === 'quote') { e.preventDefault(); return document.execCommand('insertLineBreak'); }
+  if (b.type === 'bullets' || b.type === 'numbered' || b.type === 'todo') {
+    const li = (sel.anchorNode?.nodeType === 1 ? sel.anchorNode : sel.anchorNode?.parentElement)?.closest('li');
+    if (li && !li.textContent.trim()) { // Enter on an empty item ends the list
+      e.preventDefault();
+      const last = li === ed.lastElementChild;
+      li.remove(); DOC.dirty = true; await docSave(blk);
+      if (last) return docInsert(afterBlock(id), emptyLine, 'start');
       return;
     }
-    if (!r.ok) throw new Error(out.error || 'Save failed');
-    DOC.editing = null;
-    await reloadDoc();
-  } catch (e) { toast(e.message); }
+    if (b.type === 'todo' && li) {
+      e.preventDefault();
+      const r = sel.getRangeAt(0); r.deleteContents();
+      const span = li.querySelector('span') || li;
+      const tail = document.createRange(); tail.setStart(r.endContainer, r.endOffset); tail.setEnd(span, span.childNodes.length);
+      const frag = tail.extractContents();
+      const nli = document.createElement('li');
+      nli.innerHTML = '<input type="checkbox" contenteditable="false" data-todo><span></span>';
+      nli.querySelector('span').append(frag);
+      if (!nli.querySelector('span').textContent) nli.querySelector('span').innerHTML = '<br>';
+      li.after(nli);
+      const c = document.createRange(); c.setStart(nli.querySelector('span'), 0); c.collapse(true); sel.removeAllRanges(); sel.addRange(c);
+      DOC.dirty = true;
+    }
+    return; // other lists: the browser adds the new item
+  }
+  // Paragraphs and headings: Enter splits the block at the cursor; the second half becomes a new paragraph.
+  e.preventDefault();
+  const r = sel.getRangeAt(0); r.deleteContents();
+  const tail = document.createRange(); tail.setStart(r.endContainer, r.endOffset); tail.setEnd(ed, ed.childNodes.length);
+  const box = document.createElement('div'); box.append(tail.extractContents());
+  const after = inlineMd(box).replace(/\n+$/, '').trim();
+  const before = blockMdFromDom(blk, b);
+  clearTimeout(DOC.timer);
+  const ops = [];
+  ops.push(before.trim() ? { op: 'replace', target: { blocks: [id] }, ifHash: DOC.hash, with: { markdown: before } } : { op: 'replace', target: { blocks: [id] }, ifHash: DOC.hash, with: { block: { type: b.type, md: '', attrs: b.attrs } } });
+  ops.push({ op: 'insert', target: { blocks: [id] }, side: 'after', source: { block: { type: 'paragraph', md: after } } });
+  DOC.editing = null; DOC.dirty = false;
+  try {
+    const out = await docOps({ ops });
+    DOC.focusNext = { id: out.created[out.created.length - 1], at: 'start' };
+  } catch {}
+  reloadDoc();
+});
+document.addEventListener('change', (e) => {
+  if (!e.target.matches?.('#docpane [data-todo]')) return;
+  const blk = e.target.closest('.blk');
+  e.target.closest('li')?.classList.toggle('done', e.target.checked);
+  if (DOC.editing !== blk.dataset.bid) { DOC.editing = blk.dataset.bid; DOC.hash = DOC.d.blocks.find((b) => b.id === blk.dataset.bid)?.hash; }
+  DOC.dirty = true; docSave(blk);
+});
+// Pasting: pictures become image blocks; text comes in as plain text (Markdown in it is understood when it saves).
+document.addEventListener('paste', (e) => {
+  if (!e.target.closest?.('#docpane .doc') || e.target.closest('[data-doc-title]')) return;
+  const imgs = [...(e.clipboardData?.files || [])].filter((f) => /^image\/(png|jpe?g|gif|webp)$/.test(f.type));
+  if (imgs.length) { e.preventDefault(); return docAddImages(imgs, e.target.closest('.blk')?.dataset.bid || DOC.cur); }
+  if (e.target.closest('.ed')) { e.preventDefault(); document.execCommand('insertText', false, e.clipboardData.getData('text/plain')); }
+});
+document.addEventListener('dragover', (e) => { if (e.target.closest?.('#docpane .doc') && [...(e.dataTransfer?.items || [])].some((i) => i.kind === 'file')) e.preventDefault(); });
+document.addEventListener('drop', (e) => {
+  if (!e.target.closest?.('#docpane .doc')) return;
+  const imgs = [...(e.dataTransfer?.files || [])].filter((f) => /^image\//.test(f.type));
+  if (!imgs.length) return;
+  e.preventDefault();
+  docAddImages(imgs, e.target.closest('.blk')?.dataset.bid || null);
+});
+async function docAddImages(files, afterId) {
+  let at = afterId && DOC.d.blocks.some((b) => b.id === afterId) ? afterId : null;
+  for (const f of files) {
+    if (f.size > 10 * 1024 * 1024) { toast(`${f.name} is over 10 MB`); continue; }
+    toast('Adding picture…');
+    try {
+      const data = await new Promise((ok, fail) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(',')[1] || ''); r.onerror = fail; r.readAsDataURL(f); });
+      const img = await api(`/api/docs/${DOC.id}/images`, { method: 'POST', body: { name: f.name || 'pasted.png', data } });
+      const r = await docInsert(afterBlock(at), { markdown: img.markdown }, null);
+      at = r?.created?.[0] || at;
+    } catch (err) { toast(err.message); }
+  }
 }
-function docNewBlock(afterId) {
-  document.querySelector('#docpane .blk-new')?.remove();
-  const html = `<div class="blk blk-new"><div class="blk-body"><textarea class="blk-edit" placeholder="Write Markdown: ## Heading, - list, | table |, > quote…"></textarea><div class="blk-hint muted small">Ctrl+Enter to add · Esc to cancel</div></div></div>`;
-  const ref = afterId ? $(`#docpane .blk[data-bid="${afterId}"]`) : $('#docpane .doc-add-end');
-  ref.insertAdjacentHTML(afterId ? 'afterend' : 'beforebegin', html);
-  const ta = $('#docpane .blk-new textarea');
-  ta.focus();
-  const save = async () => {
-    const v = ta.value.trim();
-    document.querySelector('#docpane .blk-new')?.remove();
-    if (!v) return;
-    await docOps({ ops: [{ op: 'insert', target: afterId ? { blocks: [afterId] } : { at: 'end' }, side: 'after', source: { markdown: v } }] }).catch(() => {});
-    reloadDoc();
-  };
-  ta.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') ta.closest('.blk-new').remove();
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(); }
-  });
-  ta.addEventListener('blur', () => setTimeout(() => { if (document.activeElement !== ta && document.contains(ta)) save(); }, 150));
+
+// ---------- toolbar ----------
+function docLink() {
+  const sel = getSelection();
+  if (!sel.rangeCount || !sel.anchorNode?.parentElement?.closest('#docpane .ed')) return toast('Select some text first');
+  const r = sel.getRangeAt(0).cloneRange();
+  const url = prompt('Link to (https://…)', 'https://');
+  if (!url || !/^https?:\/\/\S+$/.test(url)) return;
+  sel.removeAllRanges(); sel.addRange(r);
+  if (r.collapsed) document.execCommand('insertText', false, url);
+  else document.execCommand('createLink', false, url);
 }
-function docBlockMenu(btn, blk) {
+const curBlk = () => { const id = DOC.editing || DOC.cur; return id && document.querySelector(`#docpane .blk[data-bid="${id}"]`); };
+// Change the current block's kind (heading, list, quote…) keeping its text.
+async function docSetType(type, attrs = {}) {
+  const blk = curBlk(), b = blk && DOC.d.blocks.find((x) => x.id === blk.dataset.bid);
+  if (!b) return toast('Click into a line first');
+  if (!/^(paragraph|heading|bullets|numbered|todo|quote|code)$/.test(b.type)) return toast('That can’t change style');
+  const el = blk.querySelector('.ed');
+  const lines = b.type === 'code' ? el.textContent.replace(/\n$/, '').split('\n')
+    : /^(bullets|numbered|todo)$/.test(b.type) ? [...el.children].filter((x) => x.tagName === 'LI').map((li) => oneLine(inlineMd(li)))
+      : inlineMd(el).replace(/\n+$/, '').split('\n');
+  const L = lines.filter((l, i) => l.trim() || i === 0);
+  let md;
+  switch (type) {
+    case 'heading': md = '#'.repeat(attrs.level || 2) + ' ' + L.join(' ').trim(); break;
+    case 'bullets': md = L.map((l) => '- ' + l).join('\n'); break;
+    case 'numbered': md = L.map((l, i) => `${i + 1}. ${l}`).join('\n'); break;
+    case 'todo': md = L.map((l) => '- [ ] ' + l).join('\n'); break;
+    case 'quote': md = L.map((l) => '> ' + l).join('\n'); break;
+    case 'code': md = '```\n' + L.join('\n') + '\n```'; break;
+    default: md = L.join('\n');
+  }
+  const blank = !L.join('').trim();
+  const withWhat = blank ? { block: { type, md: type === 'code' ? '' : '', attrs: type === 'heading' ? { level: attrs.level || 2 } : {} } } : { markdown: md };
+  if (blank && /^(bullets|numbered|todo)$/.test(type)) withWhat.block.md = type === 'todo' ? '- [ ] ' : type === 'numbered' ? '1. ' : '- ';
+  DOC.dirty = false;
+  await docReplace(b.id, withWhat, true);
+}
+function docPopover(anchor, items, onPick) {
   document.querySelector('.doc-menu')?.remove();
-  const sel = String(getSelection() || '').trim();
-  const quote = sel && blk.contains(getSelection().anchorNode) ? sel.slice(0, 300) : '';
   const m = document.createElement('div');
   m.className = 'popover doc-menu';
-  m.innerHTML = [['comment', quote ? `Comment on “${esc(quote.slice(0, 24))}${quote.length > 24 ? '…' : ''}”` : 'Comment'], ['up', 'Move up'], ['down', 'Move down'], ['edit', 'Edit'], ['delete', 'Delete']]
-    .map(([k, l]) => `<button data-dm="${k}"><span>${l}</span></button>`).join('');
+  m.innerHTML = items.map(([k, l]) => `<button data-dm="${k}"><span>${l}</span></button>`).join('');
   document.body.append(m);
-  const r = btn.getBoundingClientRect();
+  const r = anchor.getBoundingClientRect();
   m.style.top = Math.min(r.bottom + 4, innerHeight - m.offsetHeight - 8) + 'px';
   m.style.left = Math.max(8, Math.min(r.left, innerWidth - m.offsetWidth - 8)) + 'px';
-  m.addEventListener('click', async (e) => {
-    const k = e.target.closest('[data-dm]')?.dataset.dm;
-    m.remove();
-    const id = blk.dataset.bid, i = DOC.d.blocks.findIndex((b) => b.id === id), b = DOC.d.blocks[i];
-    if (k === 'edit') return docEditBlock(blk);
-    if (k === 'delete') { await docOps({ ops: [{ op: 'delete', target: { blocks: [id] }, ifHash: b.hash }] }).catch(() => {}); return reloadDoc(); }
-    if (k === 'up' && i > 0) { await docOps({ ops: [{ op: 'move', target: { blocks: [id] }, side: 'before', ref: DOC.d.blocks[i - 1].id }] }).catch(() => {}); return reloadDoc(); }
-    if (k === 'down' && i < DOC.d.blocks.length - 1) { await docOps({ ops: [{ op: 'move', target: { blocks: [id] }, side: 'after', ref: DOC.d.blocks[i + 1].id }] }).catch(() => {}); return reloadDoc(); }
+  m.addEventListener('mousedown', (e) => e.preventDefault()); // keep the cursor where it was
+  m.addEventListener('click', (e) => { const k = e.target.closest('[data-dm]')?.dataset.dm; if (!k) return; m.remove(); onPick(k); });
+  setTimeout(() => document.addEventListener('mousedown', function off(ev) { if (!m.contains(ev.target)) { m.remove(); document.removeEventListener('mousedown', off); } }), 0);
+}
+// Toolbar buttons don't take the focus, so the cursor and selection stay in the page.
+document.addEventListener('mousedown', (e) => { if (e.target.closest?.('#docpane [data-tb]')) e.preventDefault(); });
+async function docToolbar(btn) {
+  const k = btn.dataset.tb;
+  const markDirty = () => { const blk = curBlk(); if (blk && DOC.editing === blk.dataset.bid) { DOC.dirty = true; clearTimeout(DOC.timer); DOC.timer = setTimeout(() => docSave(blk), 800); } };
+  switch (k) {
+    case 'bold': case 'italic': case 'strike':
+      if (!getSelection().anchorNode?.parentElement?.closest('#docpane .ed')) return toast('Select some text first');
+      document.execCommand(k === 'strike' ? 'strikeThrough' : k); return markDirty();
+    case 'code': {
+      const sel = getSelection();
+      if (!sel.rangeCount || sel.isCollapsed || !sel.anchorNode?.parentElement?.closest('#docpane .ed')) return toast('Select some text first');
+      const c = document.createElement('code'); c.textContent = String(sel); const r = sel.getRangeAt(0); r.deleteContents(); r.insertNode(c);
+      return markDirty();
+    }
+    case 'link': return docLink();
+    case 'bullets': case 'numbered': case 'todo': return docSetType(k);
+    case 'style': return docPopover(btn, [['p', 'Text'], ['h1', '<span style="font-size:20px">Heading 1</span>'], ['h2', '<span style="font-size:17px">Heading 2</span>'], ['h3', '<b>Heading 3</b>'], ['quote', '❝ Quote'], ['code', '&lt;/&gt; Code block']],
+      (s) => (s === 'p' ? docSetType('paragraph') : s[0] === 'h' ? docSetType('heading', { level: Number(s[1]) }) : docSetType(s)));
+    case 'table': return docInsert(afterBlock(DOC.cur), { markdown: '| Column 1 | Column 2 | Column 3 |\n|---|---|---|\n|   |   |   |\n|   |   |   |' }, 'start');
+    case 'image': return $('#docpane [data-doc-img-input]')?.click();
+    case 'insert': {
+      const inTable = curBlk()?.classList.contains('table');
+      return docPopover(btn, [['line', '¶ Text'], ['divider', '― Divider'], ['todo', '☑ Checklist'], ['table', '▦ Table'], ['image', '🖼 Picture'], ...(inTable ? [['row', '+ Table row'], ['col', '+ Table column']] : []), ['tab', '🗂 New tab']], async (s) => {
+        if (s === 'line') return docInsert(afterBlock(DOC.cur), emptyLine, 'start');
+        if (s === 'divider') return docInsert(afterBlock(DOC.cur), { markdown: '---' }, null);
+        if (s === 'todo') return docInsert(afterBlock(DOC.cur), { block: { type: 'todo', md: '- [ ] ' } }, 'start');
+        if (s === 'table') return docToolbar({ dataset: { tb: 'table' } });
+        if (s === 'image') return $('#docpane [data-doc-img-input]')?.click();
+        if (s === 'tab') return docNewTab();
+        if (s === 'row' || s === 'col') {
+          const blk = curBlk(), t = blk.querySelector('table');
+          if (s === 'row') { const tr = t.querySelector('tbody tr:last-child') || t.querySelector('tr'); const n = tr.cloneNode(true); n.querySelectorAll('th, td').forEach((c) => { c.innerHTML = ''; }); (t.tBodies[0] || t).append(n); }
+          else t.querySelectorAll('tr').forEach((tr, i) => { const c = document.createElement(i ? 'td' : 'th'); c.className = 'ed'; c.setAttribute('contenteditable', 'true'); c.textContent = i ? '' : 'Column'; tr.append(c); });
+          DOC.editing = blk.dataset.bid; DOC.hash = DOC.d.blocks.find((b) => b.id === blk.dataset.bid)?.hash; DOC.dirty = true;
+          return docSave(blk);
+        }
+      });
+    }
+  }
+}
+document.addEventListener('change', (e) => {
+  if (!e.target.matches?.('#docpane [data-doc-img-input]')) return;
+  const files = [...e.target.files]; e.target.value = '';
+  if (files.length) docAddImages(files, DOC.cur);
+});
+
+// ---------- tabs ----------
+async function docNewTab() {
+  await docFlush();
+  const tabs = docTabs(DOC.d), name = prompt('Name the new tab', 'Tab ' + (tabs.length + 1));
+  if (name == null) return;
+  const ops = [];
+  if (!tabs[0].marker) ops.push({ op: 'insert', target: { at: 'start' }, source: { block: { type: 'tab', md: '', attrs: { title: tabs[0].title } } } });
+  ops.push({ op: 'insert', target: { at: 'end' }, source: { block: { type: 'tab', md: '', attrs: { title: name.trim().slice(0, 80) || 'Tab' } } } });
+  ops.push({ op: 'insert', target: { at: 'end' }, source: emptyLine });
+  try {
+    const r = await docOps({ ops });
+    DOC.tab = tabs.length; DOC.focusNext = { id: r.created[r.created.length - 1], at: 'start' };
+    reloadDoc();
+  } catch {}
+}
+async function docTabMenu(btn, i) {
+  const tabs = docTabs(DOC.d), t = tabs[i];
+  docPopover(btn, [['rename', 'Rename'], ...(tabs.length > 1 ? [['delete', 'Delete tab']] : [])], async (k) => {
+    if (k === 'rename') {
+      const name = prompt('Tab name', t.title); if (!name?.trim()) return;
+      const op = t.marker ? { op: 'set', target: { blocks: [t.marker.id] }, attrs: { title: name.trim().slice(0, 80) } }
+        : { op: 'insert', target: { at: 'start' }, source: { block: { type: 'tab', md: '', attrs: { title: name.trim().slice(0, 80) } } } };
+      await docOps({ ops: [op] }).catch(() => {});
+    } else {
+      if (!confirm(`Delete the tab “${t.title}” and everything in it? You can restore it from Version history.`)) return;
+      const ids = [...(t.marker ? [t.marker.id] : []), ...t.blocks.map((b) => b.id)];
+      if (ids.length) await docOps({ ops: [{ op: 'delete', target: { blocks: ids } }] }).catch(() => {});
+      DOC.tab = Math.max(0, i - 1);
+    }
+    DOC.editing = null; reloadDoc();
+  });
+}
+
+// ---------- block menu and clicks ----------
+function docBlockMenu(btn, blk) {
+  const sel = String(getSelection() || '').trim();
+  const quote = sel && blk.contains(getSelection().anchorNode) ? sel.slice(0, 300) : '';
+  docPopover(btn, [['comment', quote ? `Comment on “${esc(quote.slice(0, 24))}${quote.length > 24 ? '…' : ''}”` : 'Comment'], ['up', 'Move up'], ['down', 'Move down'], ['delete', 'Delete']], async (k) => {
+    await docFlush();
+    const id = blk.dataset.bid, list = curTab().blocks, i = list.findIndex((b) => b.id === id), b = list[i];
+    if (!b) return;
+    if (k === 'delete') { DOC.editing = null; await docOps({ ops: [{ op: 'delete', target: { blocks: [id] } }] }).catch(() => {}); return reloadDoc(); }
+    if (k === 'up' && i > 0) { await docOps({ ops: [{ op: 'move', target: { blocks: [id] }, side: 'before', ref: list[i - 1].id }] }).catch(() => {}); return reloadDoc(); }
+    if (k === 'down' && i < list.length - 1) { await docOps({ ops: [{ op: 'move', target: { blocks: [id] }, side: 'after', ref: list[i + 1].id }] }).catch(() => {}); return reloadDoc(); }
     if (k === 'comment') {
       const text = prompt(quote ? `Comment on “${quote}”` : 'Comment on this block');
       if (!text?.trim()) return;
@@ -1934,17 +2421,25 @@ function docBlockMenu(btn, blk) {
       DOC.panel = 'comments'; reloadDoc();
     }
   });
-  setTimeout(() => document.addEventListener('mousedown', function off(ev) { if (!m.contains(ev.target)) { m.remove(); document.removeEventListener('mousedown', off); } }), 0);
 }
 document.addEventListener('click', async (e) => {
   const pane = e.target.closest('#docpane');
   const open = e.target.closest('[data-doc-open]');
   if (open) { e.preventDefault(); return openDoc(open.dataset.docOpen); }
-  if (!pane) return;
+  if (!pane || !DOC.id) return;
   const t = e.target;
-  if (t.closest('[data-doc-close]')) return closeDoc();
+  if (t.closest('[data-doc-close]')) { await docFlush(); return closeDoc(); }
   if (t.closest('[data-doc-wide]')) return pane.classList.toggle('wide');
+  if (t.closest('[data-doc-link]')) return copyText(`${location.origin}/#doc:${DOC.id}`);
   if (t.closest('[data-doc-panel]')) { const p = t.closest('[data-doc-panel]').dataset.docPanel; DOC.panel = DOC.panel === p ? '' : p; return renderDoc(); }
+  if (t.closest('[data-tb]')) { e.stopImmediatePropagation(); return docToolbar(t.closest('[data-tb]')); }
+  if (t.closest('[data-doc-tab-new]')) return docNewTab();
+  if (t.closest('[data-doc-tab]')) {
+    e.stopImmediatePropagation();
+    const i = Number(t.closest('[data-doc-tab]').dataset.docTab);
+    if (i === DOC.tab) return docTabMenu(t.closest('[data-doc-tab]'), i);
+    await docFlush(); DOC.tab = i; DOC.editing = null; DOC.cur = null; return renderDoc();
+  }
   if (t.closest('[data-doc-export]')) {
     e.stopImmediatePropagation();
     document.querySelector('.doc-menu')?.remove();
@@ -1957,30 +2452,24 @@ document.addEventListener('click', async (e) => {
     setTimeout(() => document.addEventListener('mousedown', function off(ev) { if (!m.contains(ev.target)) { setTimeout(() => m.remove(), 200); document.removeEventListener('mousedown', off); } }), 0);
     return;
   }
-  if (t.closest('[data-doc-restore]')) { const rev = t.closest('[data-doc-restore]').dataset.docRestore; if (!confirm(`Restore version ${rev}? The current text stays in the history.`)) return; await api(`/api/docs/${DOC.id}/restore`, { method: 'POST', body: { rev: Number(rev) } }).catch((err) => toast(err.message)); return reloadDoc(); }
+  if (t.closest('[data-doc-restore]')) { const rev = t.closest('[data-doc-restore]').dataset.docRestore; if (!confirm(`Restore version ${rev}? The current text stays in the history.`)) return; DOC.editing = null; DOC.dirty = false; await api(`/api/docs/${DOC.id}/restore`, { method: 'POST', body: { rev: Number(rev) } }).catch((err) => toast(err.message)); return reloadDoc(); }
   if (t.closest('[data-cm-resolve]')) { await api(`/api/docs/${DOC.id}/comments/${t.closest('[data-cm-resolve]').dataset.cmResolve}/resolve`, { method: 'POST', body: {} }); return reloadDoc(); }
   if (t.closest('[data-cm-goto]')) { const blk = pane.querySelector(`.blk[data-bid="${t.closest('[data-cm-goto]').dataset.cmGoto}"]`); blk?.scrollIntoView({ behavior: 'smooth', block: 'center' }); blk?.classList.add('flash'); setTimeout(() => blk?.classList.remove('flash'), 1600); return; }
-  if (t.closest('mark.cm') || t.closest('[data-blk-comments]')) { DOC.panel = 'comments'; return renderDoc(); }
+  if (t.closest('[data-blk-comments]')) { DOC.panel = 'comments'; return renderDoc(); }
   const blk = t.closest('.blk');
   if (t.closest('[data-conflict]') && blk) {
-    const ta = blk.querySelector('textarea');
-    if (t.closest('[data-conflict]').dataset.conflict === 'mine') return docSaveBlock(blk, ta, true);
-    DOC.editing = null; return reloadDoc();
+    blk.querySelector('.blk-conflict')?.remove();
+    if (t.closest('[data-conflict]').dataset.conflict === 'mine') { DOC.dirty = true; return docSave(blk, true); }
+    DOC.editing = null; DOC.dirty = false; return reloadDoc();
   }
-  if (t.closest('[data-blk-add-end]')) return docNewBlock(null);
-  if (!blk || blk.classList.contains('blk-new')) return;
-  if (t.closest('[data-blk-add]')) return docNewBlock(blk.dataset.bid);
+  if (t.closest('[data-blk-add-end]')) return docInsert(tabEndTarget(), emptyLine, 'start');
+  if (!blk) return;
+  if (t.closest('[data-blk-add]')) return docInsert(afterBlock(blk.dataset.bid), emptyLine, 'start');
   // stopImmediatePropagation: the general click handler below would close this popover in the same click.
   if (t.closest('[data-blk-menu]')) { e.stopImmediatePropagation(); return docBlockMenu(t.closest('[data-blk-menu]'), blk); }
-  if (t.closest('[data-todo]')) {
-    const b = DOC.d.blocks.find((x) => x.id === blk.dataset.bid), n = Number(t.dataset.todo);
-    let k = -1;
-    const md2 = b.md.split('\n').map((l) => (l.trim() && ++k === n ? l.replace(/\[([ xX])\]/, (_, c) => (c === ' ' ? '[x]' : '[ ]')) : l)).join('\n');
-    await docOps({ ops: [{ op: 'replace', target: { blocks: [b.id] }, ifHash: b.hash, with: { markdown: md2 } }] }).catch(() => {});
-    return reloadDoc();
-  }
-  if (t.closest('a, iframe') || String(getSelection() || '').length) return;
-  if (!blk.classList.contains('editing') && !DOC.editing) docEditBlock(blk);
+  // Links in the page open with Ctrl/Cmd+click; a plain click puts the cursor there.
+  const a = t.closest('.ed a');
+  if (a && !(e.ctrlKey || e.metaKey)) e.preventDefault();
 });
 document.addEventListener('keydown', async (e) => {
   const reply = e.target.closest?.('[data-cm-reply]');
@@ -1993,10 +2482,13 @@ document.addEventListener('keydown', async (e) => {
 });
 document.addEventListener('focusout', async (e) => {
   const title = e.target.closest?.('[data-doc-title]');
-  if (!title || !DOC.d) return;
+  if (!title || !DOC.d || DOC.rendering) return;
   const v = title.textContent.trim();
   if (v && v !== DOC.d.title) { await docOps({ ops: [], title: v }).catch(() => {}); reloadDoc(); }
 });
+// Warn before leaving with unsaved typing (it normally saves within a second or two).
+addEventListener('beforeunload', (e) => { if (DOC.dirty) { docFlush(); e.preventDefault(); } });
+
 async function docsModal() {
   const list = await api('/api/docs').catch(() => []);
   const el = modal(`<div class="modal-head"><h2>Documents</h2><button class="icon-btn" data-close aria-label="Close">${ICON.close}</button></div>
@@ -2008,7 +2500,6 @@ async function docsModal() {
     if (e.target.closest('[data-new-doc]')) { const d = await api('/api/docs', { method: 'POST', body: { title: 'Untitled', markdown: 'Start writing…' } }); closeModal(); openDoc(d.id); }
   });
 }
-
 // ---------- events ----------
 document.addEventListener('click', async (e) => {
   const t = e.target.closest('button, [data-open]');
@@ -2021,6 +2512,26 @@ document.addEventListener('click', async (e) => {
   const cur = S.current?.type === 'bot' ? bot(S.current.id) : null;
   if (t.dataset.open) return openThread(t.dataset.open);
   if (t.dataset.computer) { const cb = bot(t.dataset.computer); if (cb) return computerModal(cb); }
+  if (t.dataset.qcancel) { try { await api(`/api/messages/${t.dataset.qcancel}/queued`, { method: 'POST', body: { action: 'cancel' } }); toast('Removed from the queue'); } catch (err) { toast(err.message); } return; }
+  if (t.dataset.qedit) {
+    // Edit in place: the bubble becomes a text box with Save / Cancel.
+    const m = S.messages.find((x) => x.id === Number(t.dataset.qedit)), node = t.closest('.msg'), bub = node?.querySelector('.bubble');
+    if (!m || !bub || node.querySelector('.q-edit')) return;
+    bub.hidden = true; t.closest('.msg-actions').hidden = true;
+    bub.insertAdjacentHTML('afterend', `<div class="q-edit"><textarea rows="3">${esc(m.body)}</textarea><div class="row"><button class="btn small" data-qe-cancel>Cancel</button><button class="btn small primary" data-qe-save>Save</button></div></div>`);
+    const box = node.querySelector('.q-edit'), ta = box.querySelector('textarea');
+    ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); autosize(ta);
+    const undo = () => { box.remove(); bub.hidden = false; t.closest('.msg-actions').hidden = false; };
+    const save = async () => {
+      const text = ta.value.trim(); if (!text) return toast('Message can’t be empty');
+      if (text === m.body) return undo();
+      try { await api(`/api/messages/${m.id}/queued`, { method: 'POST', body: { action: 'edit', text } }); } catch (err) { toast(err.message); undo(); }
+    };
+    box.addEventListener('click', (ev) => { if (ev.target.closest('[data-qe-cancel]')) undo(); if (ev.target.closest('[data-qe-save]')) save(); });
+    ta.addEventListener('input', () => autosize(ta));
+    ta.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') undo(); if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); save(); } });
+    return;
+  }
   if (t.dataset.copy) { const m = S.messages.find((x) => x.id === Number(t.dataset.copy)); await navigator.clipboard?.writeText(m?.body || '').catch(() => {}); buzz(6); return toast('Copied'); }
   if (t.dataset.edit) { const m = S.messages.find((x) => x.id === Number(t.dataset.edit)); const ta = $('#msg'); if (ta && m) { ta.value = m.body; autosize(ta); ta.focus(); } return; }
   if (t.dataset.retry) { const m = S.messages.find((x) => x.id === Number(t.dataset.retry)); if (m) await api(`/api/threads/${encodeURIComponent(threadKey())}/messages`, { method: 'POST', body: { text: m.body } }); return; }
@@ -2039,6 +2550,8 @@ document.addEventListener('click', async (e) => {
     case 'new-menu': e.stopPropagation(); return popover(t, [['new-bot', 'New bot', ICON.plus], ['new-room', 'New group chat', ICON.compose], ['market', 'Browse Marketplace', ICON.grid]]);
     case 'claude': return claudeModal();
     case 'docs': return docsModal();
+    case 'artifacts': return openArtifacts();
+    case 'files': return filesModal();
     case 'user-menu': e.stopPropagation(); return popover(t, [['appearance', 'Appearance', ICON.gear], ['server', 'Server settings', ICON.monitor], ['log', 'Activity log', ICON.clock], ['docs', 'Documents', ICON.book], ['claude', S.data.claude?.mode === 'none' ? 'Connect Claude ⚠' : 'Claude account', ICON.plug], ['mfa', 'Two-factor authentication', ICON.lock], ['notify', 'Notifications', ICON.bell], ...(window.NimbusApp ? [['app-server', 'App: server address', ICON.gear]] : []), ['logout', 'Log out', ICON.close]]);
     case 'new-bot': return botModal();
     case 'edit-bot': return botModal(cur);
@@ -2161,6 +2674,228 @@ window.addEventListener('hashchange', () => {
   if (/^(bot|room):\d+$/.test(h) && h !== threadKey()) openThread(h);
 });
 
+// ---------- Office files: preview in the side pane, versions, sharing, editing ----------
+// The side pane shows a live preview of a file. When a bot (or someone in the editor) saves a new version,
+// the pane follows it. Office files preview as PDF, made on the server with LibreOffice.
+const V = { doc: null, fileId: null, follow: true, code: false, dirty: false };
+const previewKind = (f) => isImage(f) ? 'image' : /pdf$/.test(f.type) ? 'pdf' : /\.html?$/i.test(f.name) ? 'html'
+  : /\.(docx?|xlsx?|pptx?|od[tsp]|rtf)$/i.test(f.name) ? 'office' : /^text\/|json$/.test(f.type) || /\.(csv|md|txt|log|json)$/i.test(f.name) ? 'text' : 'none';
+const pdfUrl = (f) => `/api/preview/${f.id}`;
+async function openViewer(fileId, docId) {
+  const d = docId ? await api(`/api/filedocs/${docId}`).catch(() => null) : null;
+  closeDoc();
+  V.doc = d; V.fileId = fileId; V.follow = !d || d.latest?.id === fileId; V.code = false; V.dirty = false;
+  closeInfo(); $('#aside').classList.remove('open');
+  drawViewer();
+}
+function viewerFile() { return V.doc?.versions.find((v) => v.id === V.fileId) || V.doc?.latest || (V.fileId && { id: V.fileId, name: 'file', type: '' }); }
+async function drawViewer() {
+  const el = $('#docpane'), f = viewerFile(), d = V.doc;
+  if (!f) return closeDoc();
+  const kind = previewKind(f);
+  el.classList.add('open'); el.classList.toggle('wide', kind === 'html');
+  el.innerHTML = `<header class="viewer-head">
+      <div class="viewer-title">${ICON.file}<b title="${esc(f.name)}">${esc(f.name)}</b></div>
+      ${d && d.versions.length > 1 ? `<select class="viewer-ver" aria-label="Version">${d.versions.map((v) => `<option value="${v.id}" ${v.id === f.id ? 'selected' : ''}>v${v.version}${v.id === d.latest.id ? ' (latest)' : ''} · ${esc(v.authorName || '')} · ${timeAgo(v.at)}</option>`).join('')}</select>` : ''}
+      <button class="icon-btn" data-viewer="close" aria-label="Close preview">${ICON.close}</button>
+    </header>
+    <div class="viewer-bar">
+      <a class="btn small" href="${fileUrl(f)}?download=1" download>${ICON.download} Download</a>
+      ${kind === 'office' ? `<a class="btn small ghost" href="${pdfUrl(f)}?download=1" download>PDF</a>` : ''}
+      ${kind === 'html' && d && f.id === d.latest.id ? (V.code
+        ? `<button class="btn small primary" data-viewer="code-save">Save</button><button class="btn small ghost" data-viewer="code-close">Done</button><small class="muted code-state">Click anywhere on the page and type to edit</small>`
+        : `<button class="btn small ghost" data-viewer="code">${ICON.compose} Edit</button>`) : ''}
+      ${kind === 'html' ? `<button class="btn small ghost" data-viewer="html-tab">Open in new tab</button>` : ''}
+      ${d?.editable ? `<button class="btn small ghost" data-viewer="edit">${ICON.compose} Edit</button>` : ''}
+      ${d && f.id !== d.latest.id ? `<button class="btn small ghost" data-viewer="restore">Restore this version</button>` : ''}
+    </div>
+    <div class="viewer-body">${kind === 'image' ? `<img src="${fileUrl(f)}" alt="${esc(f.name)}">`
+      : kind === 'pdf' || kind === 'office' ? `<div class="viewer-wait">${kind === 'office' ? 'Making a preview…' : ''}</div><iframe title="Preview of ${esc(f.name)}" src="${kind === 'pdf' ? fileUrl(f) : pdfUrl(f)}#view=FitH"></iframe>`
+      : kind === 'html' ? `<iframe class="html-frame${V.code ? ' editing' : ''}" title="${V.code ? 'Editing' : 'Preview of'} ${esc(f.name)}" sandbox="${V.code ? 'allow-same-origin' : 'allow-scripts allow-forms allow-modals allow-popups'}"></iframe>`
+      : kind === 'text' ? '<pre class="viewer-text">Loading…</pre>'
+      : `<div class="viewer-none">No preview for this kind of file.<br><a class="btn" href="${fileUrl(f)}?download=1" download>${ICON.download} Download ${esc(f.name)}</a></div>`}</div>`;
+  if (kind === 'office') {
+    // Check the conversion first, so a missing LibreOffice shows a message instead of a JSON error in the frame.
+    const r = await fetch(pdfUrl(f), { method: 'GET' });
+    if (V.fileId !== f.id) return;
+    if (!r.ok) { const e = await r.json().catch(() => ({})); $('.viewer-body', el).innerHTML = `<div class="viewer-none">${esc(e.error || 'Preview unavailable.')}<br><a class="btn" href="${fileUrl(f)}?download=1" download>${ICON.download} Download</a></div>`; }
+  }
+  if (kind === 'text') {
+    const t = await fetch(fileUrl(f)).then((r) => r.text()).catch(() => '');
+    const pre = $('.viewer-text', el); if (pre) pre.textContent = t.slice(0, 500_000);
+  }
+  if (kind === 'html') {
+    // Sandboxed without allow-same-origin: the page's scripts run, but can't reach Nimbus or your session.
+    const t = await fetch(fileUrl(f)).then((r) => r.text()).catch(() => '');
+    if (V.fileId !== f.id) return;
+    V.html = t;
+    const fr = $('.html-frame', el);
+    if (V.code) {
+      // Editing: scripts are off (no allow-scripts) so the page can't run anything while we reach into it;
+      // the page itself becomes editable, like a word processor.
+      fr.addEventListener('load', () => {
+        const doc = fr.contentDocument; if (!doc) return;
+        doc.designMode = 'on';
+        doc.addEventListener('input', () => { V.dirty = true; const st = $('.code-state'); if (st) st.textContent = 'Unsaved changes'; });
+        doc.addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); saveHtml(); } });
+        doc.addEventListener('click', (e) => { if (e.target.closest('a')) e.preventDefault(); });
+        doc.body?.focus();
+      }, { once: true });
+    }
+    fr.srcdoc = t;
+  }
+  $('iframe', el)?.addEventListener('load', () => $('.viewer-wait', el)?.remove());
+}
+// Editing an HTML file in place: Save writes the edited page back as a new version.
+const editedHtml = () => { const doc = $('#docpane .html-frame.editing')?.contentDocument; if (!doc?.documentElement) return null; doc.designMode = 'off'; const h = (doc.doctype ? new XMLSerializer().serializeToString(doc.doctype) + '\n' : '') + doc.documentElement.outerHTML; doc.designMode = 'on'; return h; };
+async function saveHtml() {
+  const html = editedHtml(); if (html == null || !V.doc) return;
+  try {
+    V.dirty = false;
+    V.doc = await api(`/api/filedocs/${V.doc.id}/content`, { method: 'POST', body: { text: html } }); V.html = html;
+    V.fileId = V.doc.latest.id; V.follow = true;
+    const sel = $('.viewer-ver'); if (sel) drawViewer(); else { $('.code-state') && ($('.code-state').textContent = 'Saved'); }
+    toast(`Saved as v${V.doc.latest.version}`);
+  } catch (err) { V.dirty = true; toast(err.message); }
+}
+// A new version arrived: refresh the open file (following the latest one) and the Files list.
+async function fileDocsChanged() {
+  if (V.doc) {
+    const d = await api(`/api/filedocs/${V.doc.id}`).catch(() => null);
+    if (d && V.doc) { const moved = d.latest?.id !== V.doc.latest?.id; V.doc = d; if (moved && V.follow) V.fileId = d.latest.id; if (moved && !V.dirty && !ED.ed) drawViewer(); }
+  }
+  if ($('.files-modal')) filesModal(true);
+}
+const ART = { open: false, tab: 'all' }; // artifacts pane state
+// ---------- artifacts: side pane listing everything this bot made (live docs, files, web pages, visuals) ----------
+// A bot message that made something: a file, a live doc card, or an inline visual.
+function isArtifactMsg(m) { let f = []; try { f = JSON.parse(m.files || '[]'); } catch {} return f.length > 0 || m.kind === 'doc' || (m.kind === 'text' && /```(visual|chart)\n/.test(m.body || '')); }
+// New artifacts while the pane is closed light up a badge on the button; while it's open the list refreshes.
+const artNew = {};
+function artBadge() {
+  const btn = $('[data-act="artifacts"]'); if (!btn) return;
+  const n = artNew[threadKey()] || 0;
+  btn.querySelector('.count')?.remove();
+  if (n) btn.insertAdjacentHTML('beforeend', `<i class="count hot">${n > 9 ? '9+' : n}</i>`);
+}
+function artifactAdded() {
+  if (ART.open) return setTimeout(() => ART.open && openArtifacts(true), 400); // let the message land in S.messages first
+  artNew[threadKey()] = (artNew[threadKey()] || 0) + 1; artBadge();
+}
+async function openArtifacts(refresh = false) {
+  const b = S.current?.type === 'bot' ? bot(S.current.id) : null; if (!b) return;
+  if (!refresh) { closeDoc(); closeInfo(); $('#aside').classList.remove('open'); }
+  ART.open = true; delete artNew[threadKey()]; artBadge();
+  const el = $('#docpane'); el.classList.add('open');
+  if (!refresh || !$('.art-body', el)) el.innerHTML = `<div class="doc-head"><span class="doc-name">Artifacts</span><div class="doc-tools"><button class="icon-btn" data-art-close aria-label="Close">${ICON.close}</button></div></div><div class="art-body"><p class="muted">Loading…</p></div>`;
+  const key = threadKey();
+  const [docs, files] = await Promise.all([api('/api/docs').catch(() => []), api(`/api/filedocs?thread=${encodeURIComponent(key)}`).catch(() => [])]);
+  if (!ART.open || threadKey() !== key) return;
+  // Inline visuals the bot drew in this chat (```visual fences).
+  const visuals = S.messages.filter((m) => m.author !== 'user' && m.kind === 'text' && /```(visual|chart)\n/.test(m.body || ''))
+    .flatMap((m) => [...m.body.matchAll(/```(?:visual|chart)\n([\s\S]*?)```/g)].map((x, i) => ({ mid: m.id, at: m.created_at, title: (x[1].match(/<title>([^<]{1,80})/)?.[1] || x[1].match(/aria-label="([^"]{1,80})"/)?.[1] || `Visual from ${clock(m.created_at)}`) + (i ? ` (${i + 1})` : '') })));
+  const items = [
+    ...docs.filter((d) => d.bot_id === b.id).map((d) => ({ kind: 'doc', at: d.updated_at, html: `<button class="file-row" data-doc-open="${esc(d.id)}"><span class="art-ico">📄</span><span class="fn"><b>${esc(d.title || 'Document')}</b><small>Live document · ${timeAgo(d.updated_at)}</small></span></button>` })),
+    ...files.filter((f) => f.latest).map((f) => { const web = /\.html?$/i.test(f.name);
+      return { kind: web ? 'web' : 'file', at: f.updated_at, html: `<button class="file-row" data-view="${f.latest.id}" data-doc="${f.id}"><span class="art-ico">${web ? '🌐' : ICON.file}</span><span class="fn"><b>${esc(f.name)}</b><small>${web ? 'Web page' : 'File'} · v${f.latest.version || 1} · ${esc(f.latest.authorName || '')} · ${timeAgo(f.updated_at)}</small></span></button>` }; }),
+    ...visuals.map((v) => ({ kind: 'visual', at: v.at, html: `<button class="file-row" data-art-msg="${v.mid}"><span class="art-ico">📊</span><span class="fn"><b>${esc(v.title)}</b><small>Visual in chat · ${timeAgo(v.at)}</small></span></button>` }))
+  ].sort((x, y) => y.at - x.at);
+  const tabs = [['all', 'All'], ['doc', 'Docs'], ['file', 'Files'], ['web', 'Web pages'], ['visual', 'Visuals']].filter(([k]) => k === 'all' || items.some((i) => i.kind === k));
+  const draw = () => {
+    const shown = items.filter((i) => ART.tab === 'all' || i.kind === ART.tab);
+    $('.art-body', el).innerHTML = `<div class="m-tabs">${tabs.map(([k, n]) => `<button class="${ART.tab === k ? 'on' : ''}" data-art-tab="${k}">${n}</button>`).join('')}</div>
+      <div class="file-list">${shown.map((i) => i.html).join('') || `<p class="muted">Nothing yet. Ask ${esc(b.name)} for a document, spreadsheet, web page or chart and it shows up here.</p>`}</div>`;
+  };
+  if (!tabs.some(([k]) => k === ART.tab)) ART.tab = 'all';
+  draw();
+  el.onclick = (e) => {
+    const t = e.target.closest('[data-art-tab]'); if (t) { ART.tab = t.dataset.artTab; return draw(); }
+    if (e.target.closest('[data-art-close]')) { ART.open = false; el.onclick = null; return closeDoc(); }
+    const m = e.target.closest('[data-art-msg]');
+    if (m) { const node = document.querySelector(`#thread [data-mid="${m.dataset.artMsg}"]`); node?.scrollIntoView({ behavior: 'smooth', block: 'center' }); node?.classList.add('flash'); setTimeout(() => node?.classList.remove('flash'), 1500); }
+    if (e.target.closest('[data-view], [data-doc-open]')) { ART.open = false; el.onclick = null; }
+  };
+}
+async function filesModal(refresh = false) {
+  const key = threadKey();
+  const [docs, shared] = await Promise.all([key ? api(`/api/filedocs?thread=${encodeURIComponent(key)}`) : [], api('/api/filedocs')]);
+  const row = (d) => `<button class="file-row" data-view="${d.latest?.id}" data-doc="${d.id}">${ICON.file}<span><b>${esc(d.name)}</b><small>v${d.latest?.version || 1} · ${esc(d.latest?.authorName || '')} · ${timeAgo(d.updated_at)} · ${fmtSize(d.latest?.size || 0)}${d.shares.length || d.links.length ? ' · shared' : ''}</small></span></button>`;
+  const html = `<h2>Files</h2>
+    <div class="file-list">${docs.length ? docs.map(row).join('') : '<p class="muted">No files in this chat yet. Attach one, or ask the bot to make a document, spreadsheet or deck.</p>'}</div>
+    ${shared.length ? `<h3>Shared with you</h3><div class="file-list">${shared.map(row).join('')}</div>` : ''}
+    <div class="modal-foot"><button class="btn" data-close>Close</button></div>`;
+  if (refresh) { const m = $('.files-modal'); if (m) m.innerHTML = html; return; }
+  const m = modal(html, { cls: 'files-modal' });
+  m.addEventListener('click', (e) => { if (e.target.closest('[data-close]')) closeModal(); });
+}
+// In-browser editing with ONLYOFFICE (if the server has it). Saving makes a new version the bot sees next time.
+// Live editing in the side pane: autosaves every 30 s while you work (a new version the bot can read),
+// and once more when you press Done.
+const ED = { ed: null, timer: null, doc: null, key: null };
+function stopEditor(save = true) {
+  clearInterval(ED.timer); ED.timer = null;
+  if (ED.doc && save) forceSave();
+  try { ED.ed?.destroyEditor(); } catch {}
+  ED.ed = null; ED.doc = null; ED.key = null;
+}
+const forceSave = () => ED.doc && api(`/api/filedocs/${ED.doc.id}/forcesave`, { method: 'POST', body: { key: ED.key } }).catch(() => {});
+async function openEditor(d) {
+  let cfg; try { cfg = await api(`/api/filedocs/${d.id}/editor`); } catch (e) { return toast(e.message); }
+  // An old format (.xls, .doc, .ppt) comes back converted as a new file; edit and show that one.
+  if (cfg.doc) { d = cfg.doc; V.doc = d; V.fileId = d.latest.id; V.follow = true; toast(`Converted to ${d.name} for editing`); }
+  const el = $('#docpane');
+  el.classList.add('open', 'wide');
+  el.innerHTML = `<header class="viewer-head"><div class="viewer-title">${ICON.compose}<b title="${esc(d.name)}">${esc(d.name)}</b><small class="muted">Saves automatically</small></div><button class="btn small primary" data-editor-close>Done</button></header><div class="viewer-body oo-body"><div id="oo-editor"></div></div>`;
+  try {
+    if (!window.DocsAPI) await new Promise((ok, fail) => { const s = document.createElement('script'); s.src = cfg.api; s.onload = ok; s.onerror = () => fail(new Error('The document editor isn’t reachable')); document.head.append(s); });
+    ED.ed = new window.DocsAPI.DocEditor('oo-editor', { ...cfg.config, width: '100%', height: '100%' });
+    ED.doc = d; ED.key = cfg.config.document.key;
+    ED.timer = setInterval(forceSave, 30_000);
+  } catch (e) { toast(e.message); drawViewer(); }
+}
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('[data-editor-close]')) return;
+  stopEditor(); toast('Saved. The new version appears in a few seconds');
+  setTimeout(fileDocsChanged, 3000); drawViewer();
+});
+document.addEventListener('click', async (e) => {
+  const v = e.target.closest('[data-view]');
+  if (v && !e.ctrlKey && !e.metaKey) { e.preventDefault(); if (v.closest('.files-modal')) closeModal(); return openViewer(v.dataset.view, v.dataset.doc || null); }
+  const a = e.target.closest('[data-viewer]'); if (!a) return;
+  const f = viewerFile();
+  switch (a.dataset.viewer) {
+    case 'close': return closeDoc();
+    case 'edit': return openEditor(V.doc);
+    case 'code': V.code = true; V.dirty = false; return drawViewer();
+    case 'code-save': return saveHtml();
+    case 'code-close': if (V.dirty && !confirm('Discard unsaved changes?')) return; V.code = false; V.dirty = false; return drawViewer();
+    case 'html-tab': { const w = window.open('', '_blank'); if (!w) return toast('Allow pop-ups to open it'); w.opener = null;
+      // Same sandbox as the pane, via a blob page that wraps it.
+      const src = editedHtml() ?? V.html ?? '';
+      w.location = URL.createObjectURL(new Blob([`<!doctype html><meta charset=utf-8><title>${esc(f.name)}</title><style>html,body,iframe{margin:0;width:100%;height:100%;border:0}</style><iframe sandbox="allow-scripts allow-forms allow-modals allow-popups" srcdoc="${esc(src)}"></iframe>`], { type: 'text/html' }));
+      return; }
+    case 'restore': try { V.doc = await api(`/api/filedocs/${V.doc.id}/restore`, { method: 'POST', body: { uploadId: f.id } }); V.fileId = V.doc.latest.id; V.follow = true; drawViewer(); toast('Restored as the newest version'); } catch (err) { toast(err.message); } return;
+  }
+});
+document.addEventListener('change', (e) => { if (e.target.matches('.viewer-ver')) { V.fileId = e.target.value; V.follow = V.fileId === V.doc.latest.id; drawViewer(); } });
+
+
+// ---------- resizable side pane ----------
+// Drag the pane's left edge; the width is remembered.
+function setPaneWidth(w) { document.documentElement.style.setProperty('--pane-w', Math.round(w) + 'px'); document.body.classList.add('pane-sized'); }
+if (+localStorage.paneW) setPaneWidth(+localStorage.paneW);
+document.addEventListener('pointerdown', (e) => {
+  const pane = $('#docpane');
+  if (e.target !== pane || e.clientX - pane.getBoundingClientRect().left > 8) return;
+  e.preventDefault();
+  document.body.classList.add('pane-drag');
+  const move = (ev) => setPaneWidth(Math.max(360, Math.min(innerWidth - 320, innerWidth - ev.clientX)));
+  const up = () => { document.body.classList.remove('pane-drag'); localStorage.paneW = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--pane-w')) || ''; removeEventListener('pointermove', move); removeEventListener('pointerup', up); };
+  addEventListener('pointermove', move); addEventListener('pointerup', up);
+});
+document.addEventListener('dblclick', (e) => { const pane = $('#docpane'); if (e.target === pane && e.clientX - pane.getBoundingClientRect().left <= 8) { delete localStorage.paneW; document.body.classList.remove('pane-sized'); } });
+
+
 // ---------- boot ----------
 applyTheme();
 (async () => {
@@ -2168,6 +2903,7 @@ applyTheme();
   const hash = location.hash.slice(1);
   const first = Object.entries(S.data.last).sort((a, b) => b[1].at - a[1].at)[0]?.[0];
   if (/^(bot|room):\d+$/.test(hash)) openThread(hash);
+  else if (/^doc:d_[0-9a-f]+$/.test(hash)) { if (first || S.data.bots[0]) await openThread(first || 'bot:' + S.data.bots[0].id); openDoc(hash.slice(4)); }
   else if (matchMedia('(min-width: 761px)').matches && (first || S.data.bots[0])) openThread(first || 'bot:' + S.data.bots[0].id);
   else renderMain();
   connect();

@@ -11,11 +11,13 @@ import { redact } from './redact.js';
 import { addClient, broadcast } from './events.js';
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import * as Docs from './docs.js';
+import { UPLOADS, MAX_UPLOAD, safeName, uploadPath, readUpload, saveUpload, addVersion, registerFiles } from './files.js';
 import { claudeEnv, claudeStatus, setClaudeToken, TOKEN_RE } from './claudeauth.js';
-import { CLAUDE_BIN, computersOn, agentConfig, agent, runBot, stopRun, addMessage, updateMessage, botStatus, roomMembers, findMentions, markTraceWaiting, recoverRuns, HOOK_TOKEN, contextReport } from './runner.js';
+import { CLAUDE_BIN, computersOn, agentConfig, agent, runBot, stopRun, addMessage, updateMessage, botStatus, roomMembers, findMentions, markTraceWaiting, recoverRuns, HOOK_TOKEN, contextReport, cancelQueued, editQueued } from './runner.js';
 import { TEMPLATES, PLUGINS, publicPlugin } from './catalog.js';
 import { startScheduler, nextRun, isValidCron } from './scheduler.js';
-import { getPlanUsage } from './planusage.js';
+import { getPlanUsage, getModels } from './planusage.js';
+import { pluginCatalog, setPlugin } from './ccplugins.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(HERE, 'public');
@@ -117,11 +119,12 @@ function state(req) {
 }
 
 function postToThread(thread, text, files = []) {
+  files = files.map((f) => addVersion(thread, f, 'user:0')); // attachments join the chat's Files (same name = next version)
   const msg = addMessage(thread, 'user', 'text', text, null, files);
   // Bots see attachments as file paths; Claude Code's Read tool opens images and PDFs too.
   if (files.length) text = `${text || 'See the attached files.'}\n\nAttached files (open them with the Read tool):\n` + files.map((f) => `- ${uploadPath(f)} (${f.type || 'file'}, ${f.size} bytes)`).join('\n');
   if (thread.startsWith('bot:')) {
-    runBot({ botId: Number(thread.slice(4)), thread, prompt: text });
+    runBot({ botId: Number(thread.slice(4)), thread, prompt: text, msgId: msg.id, msgText: msg.body });
   } else if (thread.startsWith('room:')) {
     const roomId = Number(thread.slice(5));
     const room = q('SELECT * FROM rooms WHERE id=?').get(roomId);
@@ -159,33 +162,43 @@ route('POST', '/api/threads/:thread/messages', async (req, res, p) => {
   json(res, 200, postToThread(decodeURIComponent(p.thread), String(text).trim(), files));
 });
 
+// A message waiting in the bot's queue: change it or take it back before the bot starts.
+route('POST', '/api/messages/:id/queued', async (req, res, p) => {
+  const id = Number(p.id), { action, text = '' } = await body(req);
+  const row = q('SELECT * FROM messages WHERE id=?').get(id);
+  if (!row || !row.queued) return json(res, 409, { error: 'The bot already started on this message' });
+  if (action === 'cancel') {
+    if (!cancelQueued(id)) return json(res, 409, { error: 'The bot already started on this message' });
+    q('DELETE FROM messages WHERE id=?').run(id);
+    broadcast('message_delete', { id, thread: row.thread });
+    return json(res, 200, { ok: true });
+  }
+  if (action === 'edit') {
+    const t = redact(String(text).trim().slice(0, 100_000));
+    if (!t) return json(res, 400, { error: 'empty' });
+    if (!editQueued(id, t)) return json(res, 409, { error: 'The bot already started on this message' });
+    q('UPDATE messages SET body=? WHERE id=?').run(t, id);
+    broadcast('message_update', q('SELECT * FROM messages WHERE id=?').get(id));
+    return json(res, 200, { ok: true });
+  }
+  json(res, 400, { error: 'bad action' });
+});
+
 // ---------- uploads ----------
-// Each upload lives in data/uploads/<id>/ with the original file and meta.json.
-const UPLOADS = path.join(DATA_DIR, 'uploads');
-const MAX_UPLOAD = 20 * 1024 * 1024;
-const safeName = (n) => String(n || 'file').replace(/[\/\\\0]/g, '_').replace(/^\.+/, '_').slice(0, 120) || 'file';
-const uploadPath = (f) => path.join(UPLOADS, f.id, f.name);
-function readUpload(id) {
-  if (!/^[a-f0-9]{24}$/.test(String(id))) return null;
-  try { return JSON.parse(fs.readFileSync(path.join(UPLOADS, id, 'meta.json'), 'utf8')); } catch { return null; }
-}
+// Each upload lives in data/uploads/<id>/ with the original file and meta.json (see files.js).
 route('POST', '/api/uploads', async (req, res) => {
   const { name, type, data } = await body(req, Math.ceil(MAX_UPLOAD * 1.4) + 1000);
   const buf = Buffer.from(String(data || ''), 'base64');
   if (!buf.length) return json(res, 400, { error: 'Empty file' });
   if (buf.length > MAX_UPLOAD) return json(res, 413, { error: 'Files can be up to 20 MB' });
-  const f = { id: crypto.randomBytes(12).toString('hex'), name: safeName(name), type: String(type || '').slice(0, 100), size: buf.length };
-  fs.mkdirSync(path.join(UPLOADS, f.id), { recursive: true });
-  fs.writeFileSync(uploadPath(f), buf);
-  fs.writeFileSync(path.join(UPLOADS, f.id, 'meta.json'), JSON.stringify(f));
-  json(res, 200, f);
+  json(res, 200, saveUpload(name, buf, type ? { type: String(type).slice(0, 100) } : {}));
 });
 const INLINE = /^image\/(png|jpe?g|gif|webp|avif)$|^application\/pdf$/;
-route('GET', '/api/files/:id/:name', (req, res, p) => {
+route('GET', '/api/files/:id/:name', (req, res, p, url) => {
   const f = readUpload(p.id);
   if (!f) return json(res, 404, { error: 'not found' });
   // Only safe types open in the browser; anything else (HTML, SVG…) downloads, so it can't run script here.
-  const inline = INLINE.test(f.type);
+  const inline = INLINE.test(f.type) && !url.searchParams.has('download');
   res.writeHead(200, { 'content-type': inline ? f.type : 'application/octet-stream', 'content-length': f.size, 'x-content-type-options': 'nosniff',
     'content-security-policy': "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'", 'cache-control': 'private, max-age=31536000, immutable',
     'content-disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(f.name)}` });
@@ -214,13 +227,6 @@ async function renderPreview(file) {
     return fs.existsSync(png) ? fs.readFileSync(png) : null;
   } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
 }
-function saveUpload(name, type, buf) {
-  const f = { id: crypto.randomBytes(12).toString('hex'), name: safeName(name), type, size: buf.length };
-  fs.mkdirSync(path.join(UPLOADS, f.id), { recursive: true });
-  fs.writeFileSync(uploadPath(f), buf);
-  fs.writeFileSync(path.join(UPLOADS, f.id, 'meta.json'), JSON.stringify(f));
-  return f;
-}
 route('POST', '/api/hook/send-file', async (req, res) => {
   if (!hookAuth(req)) return json(res, 403, { error: 'forbidden' });
   const { runId, path: file, caption } = await body(req);
@@ -234,12 +240,14 @@ route('POST', '/api/hook/send-file', async (req, res) => {
   if (!st.isFile()) return json(res, 400, { error: 'Not a file' });
   if (st.size > 50 * 1024 * 1024) return json(res, 413, { error: 'Files can be up to 50 MB' });
   const ext = path.extname(real).slice(1).toLowerCase();
-  const f = saveUpload(path.basename(real), FILE_MIME[ext] || 'application/octet-stream', fs.readFileSync(real));
+  // Each file joins the chat's Files (same name = next version).
+  const f = addVersion(run.thread, saveUpload(path.basename(real), fs.readFileSync(real), { type: FILE_MIME[ext] || 'application/octet-stream' }), `bot:${run.bot_id}`);
   if (OFFICE_RE.test(real) || ext === 'pdf') {
     const png = await renderPreview(real).catch(() => null);
-    if (png) { const pv = saveUpload(f.name.replace(/\.[^.]+$/, '') + '-preview.png', 'image/png', png); f.preview = { id: pv.id, name: pv.name }; fs.writeFileSync(path.join(UPLOADS, f.id, 'meta.json'), JSON.stringify(f)); }
+    if (png) { const pv = saveUpload(f.name.replace(/\.[^.]+$/, '') + '-preview.png', png, { type: 'image/png' }); f.preview = { id: pv.id, name: pv.name }; fs.writeFileSync(path.join(UPLOADS, f.id, 'meta.json'), JSON.stringify(f)); }
   }
   addMessage(run.thread, run.bot_id, 'text', String(caption || '').slice(0, 2000), run.id, [f]);
+  broadcast('docs_changed', { thread: run.thread });
   json(res, 200, { ok: true, name: f.name, size: f.size, preview: !!f.preview });
 });
 
@@ -283,6 +291,18 @@ route('POST', '/api/docs/:id/comments', async (req, res, p) => {
 route('POST', '/api/docs/:id/comments/:cid/resolve', async (req, res, p) => {
   Docs.resolveComment(p.id, p.cid, (await body(req)).resolved !== false); docChanged(p.id, 'you', { comments: true }); json(res, 200, { ok: true });
 });
+// Pictures in documents (pasted, dropped or added by a bot).
+route('GET', '/api/docs/:id/img/:name', (req, res, p) => {
+  const file = Docs.getDoc(p.id) && Docs.imagePath(p.id, p.name);
+  if (!file || !fs.existsSync(file)) return json(res, 404, { error: 'not found' });
+  res.writeHead(200, { 'content-type': Docs.imageType(p.name), 'x-content-type-options': 'nosniff', 'cache-control': 'private, max-age=31536000, immutable', 'content-security-policy': "default-src 'none'" });
+  fs.createReadStream(file).pipe(res);
+});
+route('POST', '/api/docs/:id/images', async (req, res, p) => {
+  if (!Docs.getDoc(p.id)) return json(res, 404, { error: 'No such document' });
+  const { name, data } = await body(req, 15 * 1024 * 1024);
+  try { json(res, 200, Docs.saveImage(p.id, Buffer.from(String(data || ''), 'base64'), String(name || 'image.png'))); } catch (e) { docFail(res, e); }
+});
 route('GET', '/api/docs/:id/export/:format', (req, res, p) => sendDocExport(res, p.id, p.format));
 
 // Bot side. A bot may use documents it created, or any document in the chat it's working in.
@@ -301,6 +321,21 @@ function hookDoc(req, res, runId, docId) {
   return run;
 }
 const botActor = (run) => q('SELECT name FROM bots WHERE id=?').get(run.bot_id)?.name || 'Bot';
+// "Used docs": one line in the chat per run that lists what the bot did to which document (read, edit, comment, image).
+const docUse = new Map(); // runId -> { msgId, body }
+function noteDocUse(run, docId, act) {
+  const d = Docs.getDoc(docId); if (!d) return;
+  let u = docUse.get(run.id);
+  if (!u) { u = { body: { docs: [] } }; docUse.set(run.id, u); }
+  let e = u.body.docs.find((x) => x.id === docId);
+  if (!e) u.body.docs.push(e = { id: docId, title: d.title, acts: [] });
+  e.title = d.title;
+  if (e.acts[e.acts.length - 1] === act) return; // "Read doc, Read doc" reads the same as once
+  e.acts.push(act);
+  if (u.msgId) updateMessage(u.msgId, u.body);
+  else u.msgId = addMessage(run.thread, run.bot_id, 'docuse', u.body, run.id).id;
+  if (docUse.size > 500) docUse.delete(docUse.keys().next().value);
+}
 route('POST', '/api/hook/docs', async (req, res) => {
   const b = await body(req);
   const run = hookDoc(req, res, b.runId);
@@ -318,9 +353,11 @@ route('POST', '/api/hook/docs/list', async (req, res) => {
 });
 route('POST', '/api/hook/docs/:id/read', async (req, res, p) => {
   const b = await body(req);
-  if (!hookDoc(req, res, b.runId, p.id)) return;
+  const run = hookDoc(req, res, b.runId, p.id);
+  if (!run) return;
   try {
     const r = Docs.readDoc(p.id, b);
+    noteDocUse(run, p.id, 'read');
     // Comments come along with the outline so bots can answer them; their text is data, not instructions.
     if ((b.view || 'outline') === 'outline') r.comments = Docs.listComments(p.id).filter((c) => !c.resolved).map(({ id, block_id, quote, body: text, author, parent }) => ({ id, block: block_id, quote, text, author, parent }));
     json(res, 200, r);
@@ -330,7 +367,7 @@ route('POST', '/api/hook/docs/:id/ops', async (req, res, p) => {
   const b = await body(req);
   const run = hookDoc(req, res, b.runId, p.id);
   if (!run) return;
-  try { const r = Docs.applyOps(p.id, b, botActor(run)); docChanged(p.id, botActor(run), { blocks: r.blocks.map((x) => x.id) }); json(res, 200, r); } catch (e) { docFail(res, e); }
+  try { const r = Docs.applyOps(p.id, b, botActor(run)); noteDocUse(run, p.id, 'edit'); docChanged(p.id, botActor(run), { blocks: r.blocks.map((x) => x.id) }); json(res, 200, r); } catch (e) { docFail(res, e); }
 });
 route('POST', '/api/hook/docs/:id/comment', async (req, res, p) => {
   const b = await body(req);
@@ -339,7 +376,28 @@ route('POST', '/api/hook/docs/:id/comment', async (req, res, p) => {
   try {
     if (b.resolve) Docs.resolveComment(p.id, b.resolve, true);
     const r = b.body ? Docs.addComment(p.id, b, botActor(run)) : { ok: true };
+    noteDocUse(run, p.id, 'comment');
     docChanged(p.id, botActor(run), { comments: true }); json(res, 200, r);
+  } catch (e) { docFail(res, e); }
+});
+// A bot adds a picture from its workspace: returns the Markdown to use, or inserts it after a block (or at the end).
+route('POST', '/api/hook/docs/:id/image', async (req, res, p) => {
+  const b = await body(req);
+  const run = hookDoc(req, res, b.runId, p.id);
+  if (!run) return;
+  const real = (() => { try { return fs.realpathSync(String(b.path)); } catch { return null; } })();
+  const allowed = [botDir(run.bot_id), os.tmpdir()].map((d) => fs.realpathSync(d) + path.sep);
+  if (!real || !allowed.some((d) => real.startsWith(d)) || !fs.statSync(real).isFile()) return json(res, 400, { error: 'Put the image in your workspace folder (or /tmp) first' });
+  try {
+    const img = Docs.saveImage(p.id, fs.readFileSync(real), path.basename(real));
+    if (b.after !== undefined) {
+      const target = b.after ? { blocks: [String(b.after)] } : { at: 'end' };
+      const r = Docs.applyOps(p.id, { ops: [{ op: 'insert', target, side: 'after', source: { markdown: img.markdown } }] }, botActor(run));
+      docChanged(p.id, botActor(run), { blocks: r.blocks.map((x) => x.id) });
+      img.block = r.created[0];
+    }
+    noteDocUse(run, p.id, 'image');
+    json(res, 200, img);
   } catch (e) { docFail(res, e); }
 });
 route('POST', '/api/hook/docs/:id/export', async (req, res, p) => {
@@ -348,18 +406,24 @@ route('POST', '/api/hook/docs/:id/export', async (req, res, p) => {
   if (!run) return;
   try {
     const f = await Docs.exportDoc(p.id, b.format || 'docx');
-    const up = saveUpload(f.name, f.type, f.buf);
+    const up = addVersion(run.thread, saveUpload(f.name, f.buf, { type: f.type }), `bot:${run.bot_id}`);
     if (f.type === 'application/pdf' || /\.docx$/.test(f.name)) {
       const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'nimbus-exp-')), file = path.join(tmp, f.name);
       fs.writeFileSync(file, f.buf);
       const png = await renderPreview(file).catch(() => null);
       fs.rmSync(tmp, { recursive: true, force: true });
-      if (png) { const pv = saveUpload(f.name.replace(/\.[^.]+$/, '') + '-preview.png', 'image/png', png); up.preview = { id: pv.id, name: pv.name }; fs.writeFileSync(path.join(UPLOADS, up.id, 'meta.json'), JSON.stringify(up)); }
+      if (png) { const pv = saveUpload(f.name.replace(/\.[^.]+$/, '') + '-preview.png', png, { type: 'image/png' }); up.preview = { id: pv.id, name: pv.name }; fs.writeFileSync(path.join(UPLOADS, up.id, 'meta.json'), JSON.stringify(up)); }
     }
     addMessage(run.thread, run.bot_id, 'text', String(b.caption || '').slice(0, 2000), run.id, [up]);
     json(res, 200, { ok: true, name: f.name, size: f.buf.length });
   } catch (e) { docFail(res, e); }
 });
+
+// Models the Claude login (pasted token or the server's) can use, for the bot model dropdown.
+route('GET', '/api/models', async (req, res) => json(res, 200, await getModels(claudeEnv().CLAUDE_CODE_OAUTH_TOKEN || null)));
+
+// Files in a chat: versions, previews (files.js).
+registerFiles(route, { json, body, broadcast, addNote: (thread, text, files) => addMessage(thread, 'system', 'note', text, null, files) });
 
 // Restart the service once no bot is mid-run (a restart kills running bots, including one that asked for it).
 // Needs a sudoers rule letting this user run `systemctl restart nimbus`.
@@ -542,6 +606,13 @@ route('GET', '/api/marketplace', async (req, res, _p, url) => {
     connectors
   });
 });
+// Claude Code plugins & skills, installed for every bot (ccplugins.js).
+route('GET', '/api/cc-plugins', async (req, res, _p, url) => json(res, 200, { ...(await pluginCatalog(url.searchParams.get('fresh') === '1')), canInstall: true }));
+route('POST', '/api/cc-plugins/:action', async (req, res, p) => {
+  if (!['install', 'uninstall'].includes(p.action)) return json(res, 404, { error: 'not found' });
+  const { id } = await body(req);
+  try { json(res, 200, await setPlugin(id, p.action === 'install')); } catch (err) { json(res, 400, { error: err.message }); }
+});
 route('POST', '/api/templates/:id/add', (req, res, p) => {
   const t = TEMPLATES.find((x) => x.id === p.id);
   if (!t) return json(res, 404, { error: 'not found' });
@@ -718,7 +789,8 @@ route('DELETE', '/api/claude-account', (req, res) => {
 const SETTINGS = [
   { key: 'agent_url', env: 'NIMBUS_AGENT_URL' }, { key: 'agent_token', env: 'NIMBUS_AGENT_TOKEN', secret: true }, { key: 'callback_url', env: 'NIMBUS_CALLBACK_URL' },
   { key: 'pve_host' }, { key: 'pve_token_id' }, { key: 'pve_token_secret', secret: true },
-  { key: 'backup_target' }, { key: 'auto_compact_pct', env: 'NIMBUS_AUTO_COMPACT_PCT' }
+  { key: 'backup_target' }, { key: 'auto_compact_pct', env: 'NIMBUS_AUTO_COMPACT_PCT' },
+  { key: 'trusted_bots', env: 'NIMBUS_TRUSTED_BOTS' }, { key: 'sandbox', env: 'NIMBUS_SANDBOX' }
 ];
 route('GET', '/api/settings', (req, res) => {
   const out = {};
@@ -731,6 +803,8 @@ route('PUT', '/api/settings', async (req, res) => {
     if (b[s.key] === undefined || (s.secret && b[s.key] === '__saved__')) continue;
     const v = String(b[s.key]).trim();
     if (s.key === 'auto_compact_pct' && v && !(Number(v) >= 0 && Number(v) <= 95)) return json(res, 400, { error: 'Auto-compact must be 0 (off) to 95' });
+    if (s.key === 'trusted_bots' && v && !/^\d+([\s,]+\d+)*$/.test(v)) return json(res, 400, { error: 'Trusted bots: bot numbers separated by commas, e.g. 3' });
+    if (s.key === 'sandbox' && v && !/^(off|all|-?\d+)([\s,]+-?\d+)*$/i.test(v.replace(/^all\b/i, 'all'))) return json(res, 400, { error: 'Sandbox: off, all, bot numbers (e.g. 5,9), or all,-3 for every bot but #3' });
     if (s.key === 'backup_target' && v && !/^[\w.-]+@[\w.-]+:\/[^\s]*$/.test(v)) return json(res, 400, { error: 'Backup target should look like user@host:/path' });
     if (/_url$/.test(s.key) && v && !/^https?:\/\/[^\s]+$/.test(v)) return json(res, 400, { error: `${s.key.replace('_', ' ')} must start with http:// or https://` });
     setSetting(s.key, v);
@@ -895,12 +969,49 @@ function hookAuth(req) {
   if (['127.0.0.1', '::1'].includes(from)) return true;
   try { return computersOn() && from === new URL(agentConfig().url).hostname; } catch { return false; }
 }
+// Guard for bots that don't manage Nimbus: no reading its secrets (data/: keys, tokens, the database, other
+// bots' folders; .env; .git) and no writing its files. A bot's own folder and chat uploads stay open, and
+// Nimbus's helper tools (bin/) still run. Trusted bots: setting "trusted_bots" (ids, e.g. "3"). The shell
+// check is a text match, not a sandbox; the sandbox (sandbox.js) is the real wall.
+const NIMBUS_DIR = path.resolve(HERE);
+function guardNimbus(tool, input, botId) {
+  const trusted = String(getSetting('trusted_bots', 'NIMBUS_TRUSTED_BOTS') || '').split(/[\s,]+/).filter(Boolean);
+  if (trusted.includes(String(botId))) return null;
+  const own = path.resolve(botDir(botId)) + path.sep;
+  const inNimbus = (r) => (r === NIMBUS_DIR || r.startsWith(NIMBUS_DIR + path.sep)) && !(r + path.sep).startsWith(own);
+  const secretPath = (r) => {
+    if (!inNimbus(r)) return false;
+    const rel = path.relative(NIMBUS_DIR, r);
+    return rel === 'data' || /^\.env/.test(rel) || /^\.git(\/|$)/.test(rel)
+      || (rel.startsWith('data' + path.sep) && !/^data[\\/](uploads|shared)[\\/]/.test(rel));
+  };
+  const nimbusCode = (r) => inNimbus(r) && !/^data[\\/]shared[\\/]/.test(path.relative(NIMBUS_DIR, r));
+  if (/^(Write|Edit|MultiEdit|NotebookEdit)$/.test(tool)) {
+    const f = input?.file_path || input?.notebook_path;
+    return f && nimbusCode(path.resolve(own, String(f))) ? `writing ${f} is blocked` : null;
+  }
+  if (/^(Read|Grep|Glob|NotebookRead|LS)$/.test(tool)) {
+    const f = input?.file_path || input?.notebook_path || input?.path;
+    return f && secretPath(path.resolve(own, String(f))) ? `reading ${f} is blocked` : null;
+  }
+  if (tool === 'Bash') {
+    const esc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const c = String(input?.command || '').replace(new RegExp(esc(own.slice(0, -1)) + '(?=/|["\'\\s;&|)]|$)', 'g'), 'BOT_DIR')
+      .replace(new RegExp(esc(path.join(NIMBUS_DIR, 'data')) + '/(uploads|shared)/', 'g'), 'OPEN/');
+    const d = esc(NIMBUS_DIR);
+    if (new RegExp(`${d}/(data|\\.env|\\.git)\\b`).test(c) || /(~|\$HOME|\/home\/[^/\s]+)\/nimbus\/(data|\.env)\b/.test(c) || /\b(secret\.key|admin\.token|nimbus\.db)\b/.test(c))
+      return 'that command reads Nimbus’s private data';
+  }
+  return null;
+}
 route('POST', '/api/hook/pretool', async (req, res) => {
   if (!hookAuth(req)) return json(res, 403, { error: 'forbidden' });
   const { runId, tool, input } = await body(req);
   const run = q('SELECT * FROM runs WHERE id=?').get(runId);
   if (!run) return json(res, 200, { decision: 'allow' });
   const bot = parseBot(q('SELECT * FROM bots WHERE id=?').get(run.bot_id));
+  const guard = guardNimbus(tool, input, bot.id);
+  if (guard) return json(res, 200, { decision: 'deny', reason: `Nimbus: ${guard}. Bots can't read Nimbus's private data or change its files. Don't retry; tell the user if you need it.` });
   const gated = bot.approval_rules.some((r) => ruleMatches(r, tool, input)) && !bot.allow_rules.some((r) => ruleMatches(r, tool, input))
     && !(bot.allow_rules.includes('@self-email') && isSelfEmail(tool, input));
   if (!gated) return json(res, 200, { decision: 'allow' });

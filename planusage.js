@@ -27,3 +27,26 @@ export async function getPlanUsage() {
   planCache = { at: Date.now(), data };
   return data;
 }
+
+// Models the Claude login can use (the same OAuth token works with /v1/models), for the bot model picker.
+const modelCaches = new Map(); // token (or '') -> { at, data }
+export async function getModels(token = null) {
+  const key = token || '';
+  const hit = modelCaches.get(key);
+  if (hit && Date.now() - hit.at < 10 * 60_000) return hit.data;
+  let data;
+  try {
+    const home = process.env.HOME || os.homedir();
+    const accessToken = token || JSON.parse(fs.readFileSync(path.join(home, '.claude', '.credentials.json'), 'utf8')).claudeAiOauth?.accessToken;
+    if (!accessToken) throw new Error('Claude Code isn’t logged in with a Claude plan');
+    const r = await fetch('https://api.anthropic.com/v1/models?limit=100', {
+      headers: { authorization: `Bearer ${accessToken}`, 'anthropic-beta': 'oauth-2025-04-20', 'anthropic-version': '2023-06-01', 'user-agent': 'claude-code/2 (nimbus)' },
+      signal: AbortSignal.timeout(8000)
+    });
+    if (!r.ok) throw new Error(`Model list failed (${r.status})`);
+    const u = await r.json();
+    data = { ok: true, models: (u.data || []).map((m) => ({ id: m.id, name: m.display_name || m.id })) };
+  } catch (e) { data = { ok: false, error: e.message, models: [] }; }
+  if (data.ok) modelCaches.set(key, { at: Date.now(), data });
+  return data;
+}

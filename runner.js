@@ -9,6 +9,7 @@ import { q, parseBot, writeBotBrief, getSetting, ASK_BOT } from './db.js';
 import { redact } from './redact.js';
 import { broadcast } from './events.js';
 import { PLUGINS } from './catalog.js';
+import { sandboxed, wrap, botEnv } from './sandbox.js';
 import { claudeEnv } from './claudeauth.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -232,10 +233,17 @@ function mcpServers(botId, remote = false) {
 }
 
 // ---------- the main thing: run a bot ----------
-export function runBot({ botId, thread, prompt, depth = 0, source = 'user', parentRun = null, quiet = false }) {
+export function runBot({ botId, thread, prompt, depth = 0, source = 'user', parentRun = null, quiet = false, msgId = null, msgText = '' }) {
   botId = Number(botId);
+  const busy = !!q("SELECT 1 FROM runs WHERE bot_id=? AND status IN ('running','queued')").get(botId);
   const run = q('INSERT INTO runs (bot_id, thread, prompt, status, parent_run) VALUES (?,?,?,?,?)').run(botId, thread, redact(prompt), 'queued', parentRun);
   const runId = Number(run.lastInsertRowid);
+  if (msgId) {
+    const text = prompt.startsWith(msgText) ? msgText : '';
+    pending.set(runId, { botId, thread, msgId, text, suffix: prompt.slice(text.length) });
+    savePending(runId);
+    if (busy) setQueued(msgId, 1);
+  }
   if (!botStatus.get(botId) || botStatus.get(botId).state === 'idle') setStatus(botId, 'queued', 'Queued');
   const prev = queues.get(botId) || Promise.resolve();
   const next = prev.catch(() => {}).then(() => execute({ runId, botId, thread, prompt, depth, source, quiet }));
@@ -243,11 +251,50 @@ export function runBot({ botId, thread, prompt, depth = 0, source = 'user', pare
   return runId;
 }
 
+// ---------- message queue ----------
+// A chat message sent while the bot is busy waits here. Until its turn it can be edited or cancelled, and when
+// its turn comes, every other message queued in that chat goes into the same task.
+const pending = new Map(); // runId -> { botId, thread, msgId, text, suffix }
+function setQueued(msgId, on) {
+  q('UPDATE messages SET queued=? WHERE id=?').run(on ? 1 : 0, msgId);
+  broadcast('message_update', q('SELECT * FROM messages WHERE id=?').get(msgId));
+}
+// Saved on the run row too, so waiting messages survive a Nimbus restart (see recoverRuns).
+const savePending = (runId) => q('UPDATE runs SET queue_json=? WHERE id=?').run(JSON.stringify(pending.get(runId)), runId);
+const pendingFor = (msgId) => [...pending].find(([, p]) => p.msgId === msgId);
+export function cancelQueued(msgId) {
+  const hit = pendingFor(Number(msgId)); if (!hit) return false;
+  const [runId, p] = hit;
+  pending.delete(runId);
+  q("UPDATE runs SET status='stopped', ended_at=unixepoch() WHERE id=? AND status='queued'").run(runId);
+  const stillQueued = q("SELECT COUNT(*) AS n FROM runs WHERE bot_id=? AND status='queued'").get(p.botId).n;
+  if (!q("SELECT 1 FROM runs WHERE bot_id=? AND status='running'").get(p.botId)) setStatus(p.botId, stillQueued ? 'queued' : 'idle', stillQueued ? 'Queued' : 'Idle');
+  return true;
+}
+export function editQueued(msgId, text) {
+  const hit = pendingFor(Number(msgId)); if (!hit) return false;
+  hit[1].text = text;
+  q("UPDATE runs SET prompt=? WHERE id=? AND status='queued'").run(redact(text + hit[1].suffix), hit[0]);
+  savePending(hit[0]);
+  return true;
+}
+
 function execute({ runId, botId, thread, prompt, depth, source, quiet }) {
   return new Promise((resolve) => {
     const bot = parseBot(q('SELECT * FROM bots WHERE id=?').get(botId));
     const runRow = q('SELECT status FROM runs WHERE id=?').get(runId);
-    if (!bot || runRow?.status === 'stopped') return resolve();
+    if (!bot || runRow?.status !== 'queued') return resolve(); // stopped, cancelled or merged into an earlier task
+    const mine = pending.get(runId);
+    if (mine) {
+      pending.delete(runId);
+      const later = [...pending].filter(([id, p]) => id > runId && p.botId === botId && p.thread === thread);
+      for (const [id] of later) { pending.delete(id); q("UPDATE runs SET status='merged', ended_at=unixepoch() WHERE id=? AND status='queued'").run(id); }
+      const parts = [mine, ...later.map(([, p]) => p)];
+      prompt = parts.length === 1 ? mine.text + mine.suffix
+        : `(You were busy, so the user sent ${parts.length} messages in a row. Handle them together in one reply.)\n\n` + parts.map((p, i) => `Message ${i + 1}:\n${p.text}${p.suffix}`).join('\n\n');
+      q('UPDATE runs SET prompt=? WHERE id=?').run(redact(prompt), runId);
+      for (const p of parts) setQueued(p.msgId, 0);
+    }
     const cwd = writeBotBrief(bot, computersOn() && !!bot.computer);
     const isRoom = thread.startsWith('room:');
     const roomId = isRoom ? Number(thread.slice(5)) : null;
@@ -305,11 +352,14 @@ function execute({ runId, botId, thread, prompt, depth, source, quiet }) {
 
     let stderr = '';
     const hookEnv = { NIMBUS_RUN_ID: String(runId), NIMBUS_HOOK_TOKEN: HOOK_TOKEN };
+    // Local bots get only the environment they need (never the server's .env); sandboxed ones start inside bwrap (sandbox.js).
+    const inBox = !remote && sandboxed(botId);
+    const [cmd, cmdArgs] = inBox ? wrap(CLAUDE_BIN, args, cwd, { sharedLogin: !claudeEnv().CLAUDE_CODE_OAUTH_TOKEN }) : [CLAUDE_BIN, args];
     const child = remote
       ? remoteRun(bot, cwd, runId, args, fullPrompt, { ...PRIVACY_ENV, ...claudeEnv(), ...hookEnv, NIMBUS_URL: agentConfig().callback })
-      : spawn(CLAUDE_BIN, args, {
+      : spawn(cmd, cmdArgs, {
         cwd,
-        env: { ...process.env, ...officeEnv(), ...PRIVACY_ENV, ...claudeEnv(), ...hookEnv, NIMBUS_URL: `http://127.0.0.1:${process.env.PORT || 8787}` },
+        env: botEnv({ ...officeEnv(), ...PRIVACY_ENV, ...claudeEnv(), ...hookEnv, NIMBUS_URL: `http://127.0.0.1:${process.env.PORT || 8787}` }, cwd, inBox),
         stdio: ['pipe', 'pipe', 'pipe']
       });
     procs.set(runId, child);
@@ -469,7 +519,20 @@ export function stopRun(runId) {
 
 // On boot, anything left "running" from a previous process is dead.
 export function recoverRuns() {
-  q("UPDATE runs SET status='interrupted' WHERE status IN ('running','queued')").run();
+  // Chat messages that were waiting their turn go back in the queue, in order; everything else was cut off.
+  const waiting = q("SELECT id, queue_json FROM runs WHERE status='queued' AND queue_json IS NOT NULL ORDER BY id").all();
+  q("UPDATE runs SET status='interrupted' WHERE status IN ('running','queued') AND id NOT IN (SELECT value FROM json_each(?))").run(JSON.stringify(waiting.map((r) => r.id)));
+  q('UPDATE messages SET queued=0 WHERE queued=1').run();
+  for (const r of waiting) {
+    let p; try { p = JSON.parse(r.queue_json); } catch { continue; }
+    if (!p?.msgId || !q('SELECT 1 FROM messages WHERE id=?').get(p.msgId)) { q("UPDATE runs SET status='interrupted' WHERE id=?").run(r.id); continue; }
+    pending.set(r.id, p);
+    q('UPDATE messages SET queued=1 WHERE id=?').run(p.msgId);
+    setStatus(p.botId, 'queued', 'Queued');
+    const prev = queues.get(p.botId) || Promise.resolve();
+    const next = prev.catch(() => {}).then(() => execute({ runId: r.id, botId: p.botId, thread: p.thread, prompt: p.text + p.suffix, depth: 0, source: 'user', quiet: false }));
+    queues.set(p.botId, next);
+  }
   q("UPDATE approvals SET status='expired' WHERE status='pending'").run();
   for (const m of q("SELECT * FROM messages WHERE kind='trace' AND body LIKE '%\"status\":\"running\"%'").all()) {
     const body = JSON.parse(m.body);
@@ -517,7 +580,9 @@ export function contextReport(botId, thread, extraEnv = {}) {
     const mcp = mcpServers(botId, false);
     if (Object.keys(mcp).length) args.push('--mcp-config', JSON.stringify({ mcpServers: mcp }));
     if (bot.model) args.push('--model', bot.model);
-    const child = spawn(CLAUDE_BIN, args, { cwd, env: { ...process.env, ...PRIVACY_ENV, ...claudeEnv(), ...extraEnv }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const inBox = sandboxed(botId);
+    const [cmd, cmdArgs] = inBox ? wrap(CLAUDE_BIN, args, cwd, { sharedLogin: !claudeEnv().CLAUDE_CODE_OAUTH_TOKEN }) : [CLAUDE_BIN, args];
+    const child = spawn(cmd, cmdArgs, { cwd, env: botEnv({ ...officeEnv(), ...PRIVACY_ENV, ...claudeEnv(), ...extraEnv }, cwd, inBox), stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '', err = '';
     const timer = setTimeout(() => child.kill(), 60_000);
     child.stdout.on('data', (d) => { out += d; });

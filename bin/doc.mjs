@@ -8,7 +8,10 @@
 //   doc.mjs full <doc>                             whole doc as Markdown (avoid on long docs)
 //   doc.mjs ops <doc> <json | file | ->            apply operations: {"ifRev":N,"ops":[…]}
 //   doc.mjs comment <doc> '<json>'                 {"blockId","quote","body"} or {"parent":id,"body"} or {"resolve":id}
+//   doc.mjs image <doc> <file> [after-block|end]   add a picture (PNG/JPEG/GIF/WebP from your folder); without a
+//                                                  position it just returns the ![](url) Markdown to use in ops
 //   doc.mjs export <doc> docx|pdf|md ["caption"]   send the doc to the chat as a file
+// Tabs: a <!-- tab: Name --> line starts a tab; blocks after it belong to it until the next tab marker.
 import fs from 'node:fs';
 const { NIMBUS_RUN_ID: runId, NIMBUS_HOOK_TOKEN: token, NIMBUS_URL: base = 'http://127.0.0.1:8787' } = process.env;
 const [cmd, ...a] = process.argv.slice(2);
@@ -32,6 +35,7 @@ switch (cmd) {
   case 'full': await call(`/${id}/read`, { view: 'full' }); break;
   case 'ops': await call(`/${id}/ops`, JSON.parse(input(a[1]))); break;
   case 'comment': await call(`/${id}/comment`, JSON.parse(input(a[1]))); break;
+  case 'image': await call(`/${id}/image`, { path: a[1] && (await import('node:path')).resolve(a[1]), ...(a[2] ? { after: a[2] === 'end' ? '' : a[2] } : {}) }); break;
   case 'export': await call(`/${id}/export`, { format: a[1] || 'docx', caption: a[2] || '' }); break;
   default: usage();
 }

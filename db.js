@@ -3,9 +3,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 export const DATA_DIR = path.resolve(process.env.NIMBUS_DATA || './data');
+// Only the Nimbus user can read the data folder and database files.
+try { fs.chmodSync(DATA_DIR, 0o700); for (const f of fs.readdirSync(DATA_DIR)) if (/\.db($|[-.])/.test(f)) fs.chmodSync(path.join(DATA_DIR, f), 0o600); } catch {}
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
 export const db = new DatabaseSync(path.join(DATA_DIR, 'nimbus.db'));
+try { fs.chmodSync(path.join(DATA_DIR, 'nimbus.db'), 0o600); } catch {}
 db.exec(`
 PRAGMA journal_mode = WAL;
 CREATE TABLE IF NOT EXISTS bots (
@@ -110,6 +113,7 @@ function filesSection() {
   Always pass the ifHash you last saw. A guard_mismatch means the user edited that block: their edit wins;
   re-read it and adapt. Use outline / read / since instead of full to keep things short.
 - Charts: a \`\`\`chart fence holding self-contained SVG (shown in a sandbox, no network).
+- Pictures (screenshots, diagrams): doc.mjs image <doc> <file> [after-block|end]. Tabs: a line <!-- tab: Name --> starts a tab.
 - Comments from the user show in the outline; answer with comment, then resolve. Export with export <doc> docx|pdf.
 `;
 }
@@ -187,5 +191,7 @@ export function setSetting(key, value) {
 }
 
 if (!db.prepare('PRAGMA table_info(messages)').all().some((c) => c.name === 'files')) db.exec("ALTER TABLE messages ADD COLUMN files TEXT DEFAULT '[]'");
+if (!db.prepare('PRAGMA table_info(messages)').all().some((c) => c.name === 'queued')) db.exec('ALTER TABLE messages ADD COLUMN queued INTEGER DEFAULT 0');
+if (!db.prepare('PRAGMA table_info(runs)').all().some((c) => c.name === 'queue_json')) db.exec('ALTER TABLE runs ADD COLUMN queue_json TEXT');
 if (!db.prepare('PRAGMA table_info(runs)').all().some((c) => c.name === 'parent_run')) db.exec('ALTER TABLE runs ADD COLUMN parent_run INTEGER');
 if (!db.prepare('PRAGMA table_info(routines)').all().some((c) => c.name === 'quiet')) db.exec('ALTER TABLE routines ADD COLUMN quiet INTEGER DEFAULT 0');

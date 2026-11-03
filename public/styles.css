@@ -615,3 +615,111 @@ select option { background: var(--panel); color: var(--text); }
 .doc-list { display: flex; flex-direction: column; gap: 6px; max-height: 60vh; overflow-y: auto; }
 .doc-list .card-item small { display: block; color: var(--muted); }
 @media (max-width: 760px) { .doc { padding: 24px 22px 100px; } .doc-title { font-size: 30px; } .blk-gutter { left: auto; right: 0; top: -2px; } .doc-side { position: absolute; inset: 52px 0 0 auto; width: min(320px, 90vw); z-index: 2; } .blk-cm { right: 0; top: auto; bottom: -4px; } }
+
+/* live docs editor (toolbar, tabs, pictures), "Used Docs" line, resizable side pane */
+/* Resizable side pane: drag its left edge (double-click to reset) */
+.docpane::before { content: ''; position: absolute; left: -2px; top: 0; bottom: 0; width: 8px; cursor: col-resize; z-index: 5; }
+.docpane:hover::before, body.pane-drag .docpane::before { background: linear-gradient(90deg, transparent 3px, var(--accent, #2d9cdb) 3px, var(--accent, #2d9cdb) 5px, transparent 5px); }
+body.pane-sized .docpane, body.pane-sized .docpane.wide { width: min(var(--pane-w), 100vw); }
+body.pane-drag .docpane, body.pane-drag .main { transition: none; }
+/* Live docs: type straight into the page, toolbar, tabs, pictures */
+.doc-toolbar { display: flex; align-items: center; gap: 2px; padding: 6px 12px; border-bottom: 1px solid var(--line); flex: none; overflow-x: auto; scrollbar-width: none; }
+.doc-tabs { display: flex; gap: 2px; min-width: 0; }
+.doc-tab { border: 0; background: none; color: var(--muted); font: inherit; font-size: 13px; padding: 5px 9px; border-radius: 7px; cursor: pointer; white-space: nowrap; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+.doc-tab:hover { background: var(--line); color: var(--text); }
+.doc-tab.on { background: var(--line); color: var(--text); font-weight: 600; }
+.doc-tab.add { font-size: 16px; padding: 2px 9px; }
+.tb-sep { width: 1px; height: 20px; background: var(--line); margin: 0 6px; flex: none; }
+.tb-btn { min-width: 30px; height: 30px; border: 0; background: none; color: var(--muted); font: inherit; font-size: 14px; border-radius: 7px; cursor: pointer; padding: 0 6px; flex: none; white-space: nowrap; }
+.tb-btn small { font-size: 10px; }
+.tb-btn:hover { background: var(--line); color: var(--text); }
+.blk-body .ed { outline: none; caret-color: var(--accent, #2d9cdb); }
+.blk-body p.ed { min-height: 1.5em; }
+.blk-body .ed:empty::before, .blk-body p.ed:has(> br:only-child)::before { content: attr(data-ph); color: var(--faint); pointer-events: none; }
+.blk-body .ed:empty:not(:focus)::before { content: ''; }
+.blk-body .ed:focus:empty::before { content: attr(data-ph); }
+.blk-body ul.todo li span { flex: 1; min-width: 0; outline: none; }
+.blk-body ul.todo input { flex: none; cursor: pointer; }
+.blk-body li[data-ind="1"] { margin-left: 1.4em; }
+.blk-body li[data-ind="2"] { margin-left: 2.8em; }
+.blk-body li[data-ind="3"] { margin-left: 4.2em; }
+.blk-body li[data-ind="4"] { margin-left: 5.6em; }
+.blk-body th.ed, .blk-body td.ed { min-width: 60px; }
+.blk-body th.ed:focus, .blk-body td.ed:focus { box-shadow: inset 0 0 0 2px var(--accent, #2d9cdb); }
+.blk-body .ed a { cursor: text; }
+.doc-img { margin: 12px 0; }
+.doc-img img { display: block; max-width: 100%; height: auto; border-radius: 8px; border: 1px solid var(--line); }
+.blk.image:hover .doc-img img { border-color: var(--line-strong); }
+.blk:has(.ed:focus) { background: none; }
+/* "Used Docs" line in the chat */
+.docuse { max-width: min(480px, 100%); font-size: 14px; }
+.docuse summary { list-style: none; cursor: pointer; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; padding: 4px 0; }
+.docuse summary::-webkit-details-marker { display: none; }
+.docuse summary svg { width: 14px; height: 14px; transition: transform .15s; }
+.docuse[open] summary svg { transform: rotate(90deg); }
+.docuse-acts { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; margin-top: 4px; }
+.docuse-act { display: flex; align-items: center; gap: 6px; border: 0; border-top: 1px solid var(--line); background: none; color: var(--text); font: inherit; font-size: 14px; padding: 9px 12px; text-align: left; cursor: pointer; }
+.docuse-act:first-child { border-top: 0; }
+.docuse-act:hover { background: var(--line); }
+.docuse-act .go { margin-left: auto; color: var(--muted); }
+
+/* file viewer pane, Files list, web page cards */
+/* Office files: cards in chat, preview in the side pane, Files list, sharing, full-screen editor */
+.file-card { display: inline-flex; flex-direction: column; max-width: 300px; border-radius: 14px; overflow: hidden; background: var(--bubble); border: 1px solid var(--line); }
+.viewer-head { height: 52px; flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 0 10px 0 14px; border-bottom: 1px solid var(--line); }
+.viewer-title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; }
+.viewer-title b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.viewer-title small { white-space: nowrap; }
+.viewer-ver { max-width: 46%; height: 30px; border-radius: 8px; background: var(--panel); color: var(--text); border: 1px solid var(--line-strong); font-size: 12px; }
+.viewer-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.viewer-body { flex: 1; min-height: 0; position: relative; background: var(--panel); }
+.viewer-body iframe { width: 100%; height: 100%; border: 0; background: #fff; }
+.viewer-body img { max-width: 100%; max-height: 100%; display: block; margin: auto; object-fit: contain; height: 100%; }
+.viewer-wait { position: absolute; inset: 0; display: grid; place-items: center; color: #555; pointer-events: none; }
+.viewer-text { margin: 0; padding: 14px; height: 100%; overflow: auto; font: 12.5px/1.5 var(--mono, monospace); white-space: pre-wrap; word-break: break-word; }
+.viewer-none { padding: 40px 20px; text-align: center; color: var(--muted); display: flex; flex-direction: column; align-items: center; gap: 14px; }
+.file-row > svg { color: var(--muted); flex-shrink: 0; }
+.file-row span { display: flex; flex-direction: column; min-width: 0; }
+.file-row b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
+.file-row small, .share-row small { color: var(--muted); font-size: 12px; }
+.editor-full { position: fixed; inset: 0; z-index: 60; background: var(--side); display: flex; flex-direction: column; }
+.editor-full #oo-editor, .editor-full iframe { flex: 1; min-height: 0; }
+.oo-body { display: flex; }
+.oo-body #oo-editor, .oo-body iframe { flex: 1; min-width: 0; height: 100%; }
+/* HTML files: sandboxed preview; Edit makes the page itself editable */
+.html-frame.editing { box-shadow: inset 0 0 0 2px var(--accent, #2d9cdb); }
+.viewer-bar .code-state { align-self: center; }
+/* Web pages a bot made: a big card with a live preview so they stand out in the chat. */
+.html-card { width: min(460px, 100%); border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--line)); border-radius: 14px; overflow: hidden; background: var(--side); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent); }
+.html-card .hc-thumb { display: block; position: relative; height: 230px; overflow: hidden; background: #fff; cursor: pointer; }
+.html-card .hc-thumb::after { content: ''; position: absolute; inset: 0; }
+/* clicks open the viewer, not the page */
+.html-card iframe.html-thumb { width: 250%; height: 250%; border: 0; transform: scale(.4); transform-origin: 0 0; pointer-events: none; }
+.html-card .hc-row { display: flex; align-items: center; gap: 8px; padding: 10px 12px; }
+.html-card .hc-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; font-weight: 600; color: var(--accent); background: color-mix(in srgb, var(--accent) 15%, transparent); padding: 3px 8px; border-radius: 999px; white-space: nowrap; }
+.html-card .hc-badge svg { width: 13px; height: 13px; }
+.html-card .hc-name { flex: 1; min-width: 0; font-weight: 600; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.html-card small { color: var(--muted); white-space: nowrap; }
+/* Date and time under messages */
+.msg .stamp { display: block; font-size: 11px; color: var(--muted); margin: 3px 6px 0; }
+.msg.user .stamp { text-align: right; }
+
+/* Plugins & skills tab in the marketplace */
+.m-tabs { display: flex; gap: 4px; flex-shrink: 0; }
+.m-tabs button { border: 0; background: none; color: var(--muted); font: inherit; font-weight: 600; padding: 7px 12px; border-radius: 9px; cursor: pointer; white-space: nowrap; }
+.m-tabs button.on { background: var(--active); color: var(--text); }
+@media (max-width: 700px) { .market-top { flex-wrap: wrap; } .market-top .search { order: 3; flex-basis: 100%; } }
+
+/* Artifacts pane */
+.art-body { padding: 12px 16px; overflow-y: auto; flex: 1; }
+.art-body .m-tabs { margin-bottom: 10px; flex-wrap: wrap; }
+.art-ico { width: 22px; display: inline-flex; justify-content: center; flex-shrink: 0; }
+.file-row .fn small { display: block; color: var(--muted); font-size: 12px; }
+.msg.flash .bubble { outline: 2px solid var(--accent); outline-offset: 3px; transition: outline .3s; }
+
+/* Message queue */
+.msg.user .queued-tag { font-size: 12px; color: var(--muted); text-align: right; margin-top: 3px; }
+.msg-actions.show { opacity: 1; }
+.q-edit { display: flex; flex-direction: column; gap: 6px; width: min(520px, 100%); margin-left: auto; }
+.q-edit textarea { font: inherit; padding: 10px 12px; border-radius: 14px; border: 1px solid var(--line); background: var(--panel); color: var(--text); resize: none; }
+.q-edit .row { display: flex; gap: 6px; justify-content: flex-end; }

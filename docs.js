@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
-import { db, q } from './db.js';
+import { db, q, DATA_DIR } from './db.js';
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS docs (
@@ -42,8 +42,9 @@ const newId = () => 'b_' + crypto.randomBytes(3).toString('hex');
 const hashOf = (b) => crypto.createHash('sha1').update(`${b.type}\n${JSON.stringify(b.attrs || {})}\n${b.md}`).digest('hex').slice(0, 8);
 
 // ---------- Markdown <-> blocks ----------
-// One block per heading, paragraph, list, table, quote, code fence, divider, chart or pending section.
-// Pending blocks are written as <!-- pending: intent -->, charts as ```chart (SVG or HTML) fences.
+// One block per heading, paragraph, list, table, quote, code fence, divider, chart, image, tab or pending section.
+// Pending blocks are written as <!-- pending: intent -->, charts as ```chart (SVG or HTML) fences, images as
+// ![alt](url) on a line of their own, and tabs as <!-- tab: Title --> (everything after it, up to the next tab).
 export function parseMarkdown(src) {
   const lines = String(src ?? '').replace(/\r\n?/g, '\n').split('\n');
   const out = [];
@@ -63,6 +64,8 @@ export function parseMarkdown(src) {
       continue;
     }
     if ((m = line.match(/^<!--\s*pending:\s*(.*?)\s*-->\s*$/i))) { push('pending', '', { intent: m[1] }); i++; continue; }
+    if ((m = line.match(/^<!--\s*tab:\s*(.*?)\s*-->\s*$/i))) { push('tab', '', { title: m[1].slice(0, 80) || 'Tab' }); i++; continue; }
+    if (/^\s*!\[[^\]]*\]\([^)\s]+\)\s*$/.test(line)) { push('image', line.trim()); i++; continue; }
     if ((m = line.match(/^(#{1,4})\s+(.*)$/))) { push('heading', m[2].trim(), { level: m[1].length }); i++; continue; }
     if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { push('divider', ''); i++; continue; }
     const take = (re) => { const body = []; while (i < lines.length && re.test(lines[i])) body.push(lines[i++]); return body.join('\n'); };
@@ -72,7 +75,7 @@ export function parseMarkdown(src) {
     if (/^\s*[-*+] /.test(line)) { push('bullets', take(/^(\s*[-*+] |\s{2,}\S)/)); continue; }
     if (/^\s*\d+[.)] /.test(line)) { push('numbered', take(/^(\s*\d+[.)] |\s{2,}\S)/)); continue; }
     const body = [];
-    while (i < lines.length && lines[i].trim() && !/^(#{1,4}\s|```|\s*\||\s*>|\s*[-*+] |\s*\d+[.)] |<!--\s*pending:)/i.test(lines[i])) body.push(lines[i++]);
+    while (i < lines.length && lines[i].trim() && !/^(#{1,4}\s|```|\s*\||\s*>|\s*[-*+] |\s*\d+[.)] |<!--\s*(pending|tab):|\s*!\[[^\]]*\]\([^)\s]+\)\s*$)/i.test(lines[i])) body.push(lines[i++]);
     if (!body.length) body.push(lines[i++]);
     push('paragraph', body.join('\n'));
   }
@@ -87,6 +90,7 @@ export function blockToMarkdown(b) {
     case 'chart': return '```chart\n' + b.md + '\n```';
     case 'divider': return '---';
     case 'pending': return `<!-- pending: ${a.intent || ''} -->`;
+    case 'tab': return `<!-- tab: ${a.title || 'Tab'} -->`;
     default: return b.md;
   }
 }
@@ -96,7 +100,7 @@ export const docMarkdown = (doc, blocks) => `# ${doc.title}\n\n` + blocks.map(bl
 const parse = (r) => r && ({ id: r.id, type: r.type, attrs: JSON.parse(r.attrs || '{}'), md: r.md, hash: r.hash, rev: r.rev });
 export const getDoc = (id) => q('SELECT * FROM docs WHERE id=?').get(String(id)) || null;
 export const getBlocks = (docId) => q('SELECT * FROM doc_blocks WHERE doc_id=? ORDER BY pos').all(docId).map(parse);
-const preview = (b) => (b.type === 'pending' ? `(pending) ${b.attrs.intent || ''}` : b.type === 'chart' ? '(chart)' : b.md.replace(/\s+/g, ' ')).slice(0, 60);
+const preview = (b) => (b.type === 'pending' ? `(pending) ${b.attrs.intent || ''}` : b.type === 'chart' ? '(chart)' : b.type === 'tab' ? `(tab) ${b.attrs.title || ''}` : b.type === 'image' ? `(image) ${b.md.match(/^!\[([^\]]*)/)?.[1] || ''}` : b.md.replace(/\s+/g, ' ')).slice(0, 60);
 const brief = (b) => ({ id: b.id, type: b.type, ...(b.type === 'heading' ? { level: b.attrs.level } : {}), hash: b.hash, preview: preview(b) });
 
 // The three cheap projections for bots: outline, chosen blocks in full, or only what changed since a revision.
@@ -316,7 +320,9 @@ export async function exportDoc(docId, format) {
   const doc = getDoc(docId);
   if (!doc) throw new DocError('not_found', 'No such document');
   const blocks = getBlocks(docId).filter((b) => b.type !== 'pending' && b.type !== 'chart');
-  const mdText = `---\ntitle: "${doc.title.replace(/"/g, '\\"')}"\n---\n\n` + blocks.map(blockToMarkdown).join('\n\n') + '\n';
+  const forPandoc = (b) => b.type === 'tab' ? `# ${b.attrs.title || 'Tab'}`
+    : b.type === 'image' ? b.md.replace(/\(\/api\/docs\/[^/]+\/img\/([\w.-]+)\)/, (_, n) => `(${imagePath(docId, n)})`) : blockToMarkdown(b);
+  const mdText = `---\ntitle: "${doc.title.replace(/"/g, '\\"')}"\n---\n\n` + blocks.map(forPandoc).join('\n\n') + '\n';
   const safe = doc.title.replace(/[\/:*?"<>|\x00-\x1f]+/g, '').replace(/\.+$/, '').trim().slice(0, 80) || 'document';
   if (format === 'md') return { name: safe + '.md', type: 'text/markdown', buf: Buffer.from(docMarkdown(doc, blocks)) };
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'nimbus-doc-'));
@@ -335,3 +341,24 @@ export async function exportDoc(docId, format) {
     throw new DocError('bad_request', 'format must be md, docx or pdf');
   } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
 }
+
+// ---------- images ----------
+// Pictures in a document live in data/doc-images/<doc>/ and are served (to people who can open the doc)
+// at /api/docs/<doc>/img/<name>. Blocks hold ![alt](that url).
+const IMG_DIR = path.join(DATA_DIR, 'doc-images');
+const IMG_TYPES = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' };
+export const imageType = (name) => IMG_TYPES[path.extname(name).slice(1).toLowerCase()] || null;
+export function imagePath(docId, name) {
+  if (!/^d_[0-9a-f]+$/.test(docId) || !/^[\w-]+\.(png|jpe?g|gif|webp)$/i.test(name)) return null;
+  return path.join(IMG_DIR, docId, name);
+}
+export function saveImage(docId, buf, name = 'image.png') {
+  const ext = (path.extname(name).slice(1).toLowerCase() || 'png').replace('jpeg', 'jpg');
+  if (!IMG_TYPES[ext]) throw new DocError('bad_request', 'Images can be PNG, JPEG, GIF or WebP');
+  if (!buf?.length || buf.length > 10 * 1024 * 1024) throw new DocError('too_large', 'Images can be up to 10 MB');
+  const file = crypto.randomBytes(6).toString('hex') + '.' + ext;
+  fs.mkdirSync(path.join(IMG_DIR, docId), { recursive: true });
+  fs.writeFileSync(path.join(IMG_DIR, docId, file), buf);
+  return { url: `/api/docs/${docId}/img/${file}`, markdown: `![${path.basename(name, path.extname(name)).replace(/[\[\]]/g, '').slice(0, 80) || 'image'}](/api/docs/${docId}/img/${file})` };
+}
+
